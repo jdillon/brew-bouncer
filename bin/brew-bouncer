@@ -1,0 +1,24 @@
+#!/bin/bash
+#:  * `bouncer` [<subcommand>]
+#:
+#:  Homebrew upgrade manager — update, upgrade, and restart what needs it.
+#:
+#:  `brew bouncer status`
+#:  Show outdated packages and detect which running apps need restarting.
+#:
+#:  `brew bouncer upgrade` [<packages...>]
+#:  Update, upgrade, and interactively restart affected apps.
+#:  Use `--yes` to skip confirmations.
+#:
+#:  `brew bouncer restart`
+#:  Detect and restart upgraded apps/processes.
+#:
+#:  `--debug`   Show debug-level log output
+#:  `--verbose` Show info-level log output
+#:  `--quiet`   Suppress warnings, show errors only
+
+# Resolve to the actual source directory regardless of symlinks
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")" && pwd)"
+SOURCE_DIR="$(dirname "$SCRIPT_DIR")/src"
+
+exec bun "$SOURCE_DIR/index.ts" "$@"

@@ -1,19 +1,13 @@
 import { brewUpdateStreaming, brewOutdated, brewUpgradeStreaming } from "../brew/runner.ts";
-import { parseOutdated, filterOutdated, type OutdatedPackage } from "../brew/parser.ts";
+import { parseOutdated, filterOutdated } from "../brew/parser.ts";
 import { detectRunningUpgrades } from "../detect/matcher.ts";
-import { formatReport } from "../output/reporter.ts";
 import { restartApp } from "../restart.ts";
 import { confirm, confirmRestart } from "../prompt.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
 import { spinner } from "../spinner.ts";
+import { renderPackageTable, renderSkipped, renderSummary } from "../output/format.ts";
 import chalk from "chalk";
-
-function shortVersion(v: string): string {
-  const base = v.includes(",") ? v.split(",")[0]! : v;
-  if (base.length > 20) return base.slice(0, 18) + "…";
-  return base;
-}
 
 interface UpgradeOptions {
   yes: boolean;
@@ -81,43 +75,37 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     return;
   }
 
-  // Step 3: Show what will be upgraded and confirm
+  // Step 3: Detect running processes BEFORE showing preview
+  const s2 = spinner("Checking running processes...");
+  const preDetected = await detectRunningUpgrades(targets, (msg) => s2.update(msg));
+  const detectedMap = new Map(preDetected.map((d) => [d.packageName, d]));
+  if (preDetected.length === 0) {
+    s2.done("No running apps will be affected");
+  } else {
+    s2.done(`${preDetected.length} running app(s) will need restarting`);
+  }
+
+  // Step 4: Show what will be upgraded and confirm
   const formulae = targets.filter((p) => p.type === "formula");
   const casks = targets.filter((p) => p.type === "cask");
 
   console.log(chalk.bold("\nThe following packages will be upgraded:\n"));
 
   if (formulae.length > 0) {
-    console.log(chalk.bold(`  Formulae (${formulae.length}):`));
-    for (const f of formulae) {
-      console.log(
-        `    ${chalk.white(f.name)}  ${chalk.red(shortVersion(f.installedVersions[0] ?? ""))} ${chalk.dim("→")} ${chalk.green(shortVersion(f.currentVersion))}`
-      );
-    }
-    console.log("");
+    console.log(chalk.bold(`Formulae (${formulae.length})`));
+    console.log(renderPackageTable(formulae, detectedMap));
   }
 
   if (casks.length > 0) {
-    console.log(chalk.bold(`  Casks (${casks.length}):`));
-    for (const c of casks) {
-      console.log(
-        `    ${chalk.white(c.name)}  ${chalk.red(shortVersion(c.installedVersions[0] ?? ""))} ${chalk.dim("→")} ${chalk.green(shortVersion(c.currentVersion))}`
-      );
-    }
-    console.log("");
+    console.log(chalk.bold(`Casks (${casks.length})`));
+    console.log(renderPackageTable(casks, detectedMap));
   }
 
   if (skipped.length > 0 && !options.only) {
-    console.log(chalk.dim(`  Skipped (${skipped.length}):`));
-    for (const s of skipped) {
-      console.log(chalk.dim(`    ${s.name}  (${s.skipped!.reason})`));
-    }
-    console.log("");
+    renderSkipped(skipped);
   }
 
-  console.log(
-    `${chalk.bold(String(targets.length))} package(s) to upgrade.`
-  );
+  renderSummary(targets.length, detectedMap.size, skipped.length);
 
   if (!options.yes) {
     const proceed = await confirm("Proceed with upgrade?");
@@ -127,39 +115,37 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     }
   }
 
-  // Step 4: Upgrade
+  // Step 5: Upgrade
   console.log(chalk.bold("\nUpgrading...\n"));
   const upgradeExitCode = await brewUpgradeStreaming(options.only);
 
+  // Don't bail on failure — brew returns 1 for partial failures too.
+  // Always continue to detection and restart, which is the whole point.
   if (upgradeExitCode !== 0) {
-    log.error("brew upgrade failed");
-    process.exit(1);
-  }
-
-  console.log("");
-
-  // Step 5: Detect running processes
-  const s2 = spinner("Checking running processes...");
-  const detected = await detectRunningUpgrades(targets, (msg) => s2.update(msg));
-  if (detected.length === 0) {
-    s2.done("No running apps or processes were affected");
+    console.log("");
+    console.log(chalk.yellow("⚠ brew upgrade exited with errors (some packages may have failed)"));
+    console.log(chalk.dim("  Continuing to check for apps that need restarting..."));
   } else {
-    s2.done(`${detected.length} running app(s) need restarting`);
+    console.log(chalk.green("\n✓ Upgrade complete"));
   }
 
-  // Step 6: Report
+  // Step 6: Re-detect running processes (state may have changed after upgrade)
   console.log("");
-  const report = formatReport(
-    targets.length,
-    formulae.length,
-    casks.length,
-    detected
-  );
-  console.log(report);
+  const s3 = spinner("Checking running processes...");
+  const detected = await detectRunningUpgrades(targets, (msg) => s3.update(msg));
+  if (detected.length === 0) {
+    s3.done("No running apps or processes need restarting");
+    return;
+  }
+  s3.done(`${detected.length} running app(s) need restarting`);
 
-  if (detected.length === 0) return;
+  // Step 7: Show what needs restarting
+  console.log("");
+  for (const app of detected) {
+    console.log(`  ${chalk.yellow("⟳")} ${chalk.bold(app.displayName)}  ${chalk.dim(app.packageName)}  ${chalk.red(app.oldVersion)} ${chalk.dim("→")} ${chalk.green(app.newVersion)}`);
+  }
 
-  // Step 7: Restart
+  // Step 8: Restart
   console.log("");
 
   let restartAll = options.yes;

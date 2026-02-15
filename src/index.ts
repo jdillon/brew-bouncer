@@ -7,7 +7,7 @@ import { restart } from "./commands/restart.ts";
 import { setLogLevel } from "./logger.ts";
 
 program
-  .name("brew-bouncer")
+  .name("brew bouncer")
   .description("Homebrew upgrade manager — update, upgrade, and restart what needs it")
   .version("0.1.0")
   .option("--debug", "Show all log output (debug + info + warn + error)")
