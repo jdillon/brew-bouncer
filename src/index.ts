@@ -3,7 +3,6 @@
 import { program } from "commander";
 import { upgrade } from "./commands/upgrade.ts";
 import { status } from "./commands/status.ts";
-import { restart } from "./commands/restart.ts";
 import { setLogLevel } from "./logger.ts";
 
 program
@@ -24,7 +23,12 @@ program
   .argument("[packages...]", "Specific packages to upgrade (default: all)")
   .option("-y, --yes", "Restart all affected apps without prompting", false)
   .action(async (packages: string[], opts: { yes: boolean }) => {
-    await upgrade({ yes: opts.yes, only: packages.length > 0 ? packages : undefined });
+    const globalOpts = program.opts<{ verbose?: boolean }>();
+    await upgrade({
+      yes: opts.yes,
+      verbose: globalOpts.verbose ?? false,
+      only: packages.length > 0 ? packages : undefined,
+    });
   });
 
 program
@@ -32,13 +36,6 @@ program
   .description("Show outdated packages without upgrading")
   .action(async () => {
     await status();
-  });
-
-program
-  .command("restart")
-  .description("Detect and restart upgraded apps/processes")
-  .action(async () => {
-    await restart();
   });
 
 program.parse();

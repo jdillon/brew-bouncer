@@ -66,10 +66,12 @@ export function parseOutdated(json: string): OutdatedPackage[] {
  * Filters outdated packages, marking ones that should be skipped.
  * - `latest -> latest` casks: brew can't detect actual changes
  * - Packages in the user's ignore list
+ * - Installer-manual casks: brew can't auto-upgrade these
  */
 export function filterOutdated(
   packages: OutdatedPackage[],
-  ignoreList: string[]
+  ignoreList: string[],
+  installerManualCasks?: Set<string>
 ): { actionable: OutdatedPackage[]; skipped: OutdatedPackage[] } {
   const ignoreSet = new Set(ignoreList.map((n) => n.toLowerCase()));
   const actionable: OutdatedPackage[] = [];
@@ -81,7 +83,12 @@ export function filterOutdated(
     } else if (isUnversionedCask(pkg)) {
       skipped.push({
         ...pkg,
-        skipped: { reason: "unversioned (latest -> latest)" },
+        skipped: { reason: "unversioned (latest → latest)" },
+      });
+    } else if (installerManualCasks?.has(pkg.name)) {
+      skipped.push({
+        ...pkg,
+        skipped: { reason: "installer manual (upgrade manually)" },
       });
     } else {
       actionable.push(pkg);
@@ -97,6 +104,26 @@ function isUnversionedCask(pkg: OutdatedPackage): boolean {
     pkg.currentVersion === "latest" &&
     pkg.installedVersions.every((v) => v === "latest")
   );
+}
+
+/**
+ * Detect casks that use `installer manual` — these cannot be auto-upgraded.
+ * Brew will refuse to upgrade them and return exit code 1.
+ */
+export function detectInstallerManualCasks(caskInfo: BrewCask[]): Set<string> {
+  const manual = new Set<string>();
+  for (const cask of caskInfo) {
+    for (const artifact of cask.artifacts) {
+      if ("installer" in artifact && Array.isArray(artifact.installer)) {
+        for (const entry of artifact.installer) {
+          if (typeof entry === "object" && entry !== null && "manual" in entry) {
+            manual.add(cask.token);
+          }
+        }
+      }
+    }
+  }
+  return manual;
 }
 
 export function parseBrewInfo(json: string): BrewInfoResult {

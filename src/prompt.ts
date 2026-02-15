@@ -1,17 +1,85 @@
 import * as readline from "node:readline/promises";
+import { checkbox } from "@inquirer/prompts";
+import type { OutdatedPackage } from "./brew/parser.ts";
+import type { DetectedApp } from "./detect/matcher.ts";
+import { shortVersion, formatStatus } from "./output/format.ts";
+import chalk from "chalk";
 
-export async function confirm(message: string): Promise<boolean> {
+export type ConfirmChoice = "yes" | "no" | "select";
+
+/**
+ * Prompt for upgrade confirmation with select option.
+ * Y = proceed with all, n = abort, s = open package selector.
+ */
+export async function confirmUpgrade(message: string): Promise<ConfirmChoice> {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
   });
 
   try {
-    const answer = await rl.question(`${message} [y/N] `);
-    return answer.trim().toLowerCase() === "y";
+    const answer = await rl.question(
+      `${message} [${chalk.bold("Y")}/${chalk.dim("n")}/${chalk.cyan("s")}elect] `
+    );
+    const trimmed = answer.trim().toLowerCase();
+
+    if (trimmed === "n" || trimmed === "no") return "no";
+    if (trimmed === "s" || trimmed === "select") return "select";
+    return "yes";
   } finally {
     rl.close();
   }
+}
+
+/**
+ * Interactive checkbox selector for choosing which packages to upgrade.
+ * All packages start checked; user unchecks what they don't want.
+ */
+export async function selectPackages(
+  packages: OutdatedPackage[],
+  detectedMap: Map<string, DetectedApp>
+): Promise<OutdatedPackage[]> {
+  // Build choice labels with version info and restart status
+  const choices = packages.map((pkg) => {
+    const detected = detectedMap.get(pkg.name);
+    const version = `${chalk.red(shortVersion(pkg.installedVersions[0] ?? ""))} ${chalk.dim("→")} ${chalk.green(shortVersion(pkg.currentVersion))}`;
+    const status = detected ? `  ${formatStatus(detected)}` : "";
+    const label = `${chalk.white(pkg.name)}  ${version}${status}`;
+
+    return {
+      name: label,
+      value: pkg.name,
+      checked: true,
+    };
+  });
+
+  const selected = await checkbox({
+    message: "Select packages to upgrade",
+    choices,
+    pageSize: 20,
+    loop: false,
+    shortcuts: {
+      all: "a",
+      invert: "i",
+    },
+    theme: {
+      prefix: chalk.cyan("?"),
+      icon: {
+        checked: chalk.green("◉"),
+        unchecked: chalk.dim("◯"),
+        cursor: chalk.cyan("❯"),
+      },
+      style: {
+        highlight: (text: string) => chalk.cyan(text),
+        help: (text: string) => chalk.dim(text),
+        renderSelectedChoices: (selected: ReadonlyArray<{ name?: string; value: string }>) =>
+          chalk.green(`${selected.length} selected`),
+      },
+    },
+  });
+
+  const selectedSet = new Set(selected);
+  return packages.filter((p) => selectedSet.has(p.name));
 }
 
 export type RestartChoice = "yes" | "no" | "all";

@@ -46,8 +46,10 @@ export function renderPackageTable(
   for (const pkg of packages) {
     const detected = detectedMap?.get(pkg.name);
     const statusCell = detected ? formatStatus(detected) : "";
+    const typeIcon = pkg.type === "cask" ? "🍷" : "🍺";
 
     table.push([
+      typeIcon,
       chalk.white(pkg.name),
       chalk.red(shortVersion(pkg.installedVersions[0] ?? "")),
       chalk.dim("→"),
