@@ -3,42 +3,41 @@ import { parseOutdated, filterOutdated } from "../brew/parser.ts";
 import { detectRunningUpgrades, type DetectedApp } from "../detect/matcher.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
+import { spinner } from "../spinner.ts";
 
 export async function status(): Promise<void> {
   const config = await loadConfig();
 
-  process.stdout.write("Updating Homebrew... ");
+  const s1 = spinner("Updating Homebrew...");
   const updateResult = await brewUpdate();
   if (updateResult.exitCode !== 0) {
-    console.log("failed");
+    s1.done("Updating Homebrew... failed");
     log.error({ stderr: updateResult.stderr }, "brew update failed");
     process.exit(1);
   }
-  console.log("done");
+  s1.done("Homebrew updated");
 
-  process.stdout.write("Checking for outdated packages... ");
+  const s2 = spinner("Checking for outdated packages...");
   const outdatedResult = await brewOutdated();
 
   if (outdatedResult.exitCode !== 0 || !outdatedResult.stdout.trim()) {
-    console.log("done");
-    console.log("Everything is up to date.");
+    s2.done("Everything is up to date.");
     return;
   }
 
   const allOutdated = parseOutdated(outdatedResult.stdout);
   if (allOutdated.length === 0) {
-    console.log("done");
-    console.log("Everything is up to date.");
+    s2.done("Everything is up to date.");
     return;
   }
-  console.log(`${allOutdated.length} found`);
+  s2.done(`${allOutdated.length} outdated packages found`);
 
   const { actionable, skipped } = filterOutdated(allOutdated, config.ignore);
 
   // Detect which outdated packages have running processes
-  process.stdout.write("Checking for running processes... ");
-  const detected = await detectRunningUpgrades(actionable);
-  console.log("done");
+  const s3 = spinner("Checking running processes...");
+  const detected = await detectRunningUpgrades(actionable, (msg) => s3.update(msg));
+  s3.done(`Checked ${actionable.length} packages against running processes`);
   const runningSet = new Set(detected.map((d) => d.packageName));
 
   console.log("");

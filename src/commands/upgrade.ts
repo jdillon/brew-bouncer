@@ -6,6 +6,7 @@ import { restartApp } from "../restart.ts";
 import { confirm, confirmRestart } from "../prompt.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
+import { spinner } from "../spinner.ts";
 
 interface UpgradeOptions {
   yes: boolean;
@@ -130,8 +131,12 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   console.log("\nDone.\n");
 
   // Step 5: Detect running processes
-  log.debug("Detecting running apps and processes");
-  const detected = await detectRunningUpgrades(targets);
+  const progressLine = (msg: string) => {
+    process.stdout.write(`\r\x1b[KChecking running processes... ${msg}`);
+  };
+  progressLine("starting");
+  const detected = await detectRunningUpgrades(targets, progressLine);
+  process.stdout.write(`\r\x1b[KChecking running processes... done\n`);
 
   // Step 6: Report
   const report = formatReport(
