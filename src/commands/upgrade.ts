@@ -7,6 +7,13 @@ import { confirm, confirmRestart } from "../prompt.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
 import { spinner } from "../spinner.ts";
+import chalk from "chalk";
+
+function shortVersion(v: string): string {
+  const base = v.includes(",") ? v.split(",")[0]! : v;
+  if (base.length > 20) return base.slice(0, 18) + "…";
+  return base;
+}
 
 interface UpgradeOptions {
   yes: boolean;
@@ -17,7 +24,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   const config = await loadConfig();
 
   // Step 1: Update
-  console.log("Updating Homebrew...\n");
+  console.log(chalk.bold("Updating Homebrew...\n"));
   const updateExitCode = await brewUpdateStreaming();
   if (updateExitCode !== 0) {
     log.error("brew update failed");
@@ -26,19 +33,20 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   console.log("");
 
   // Step 2: Get outdated list
-  log.debug("Running brew outdated");
+  const s1 = spinner("Checking for outdated packages...");
   const outdatedResult = await brewOutdated();
 
   if (outdatedResult.exitCode !== 0 || !outdatedResult.stdout.trim()) {
-    console.log("Everything is up to date.");
+    s1.done("Everything is up to date.");
     return;
   }
 
   const allOutdated = parseOutdated(outdatedResult.stdout);
   if (allOutdated.length === 0) {
-    console.log("Everything is up to date.");
+    s1.done("Everything is up to date.");
     return;
   }
+  s1.done(`${allOutdated.length} outdated packages found`);
 
   const { actionable, skipped } = filterOutdated(allOutdated, config.ignore);
 
@@ -55,9 +63,9 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
           (s) => s.name.toLowerCase() === name.toLowerCase()
         );
         if (wasSkipped) {
-          console.log(`${name} was skipped (${wasSkipped.skipped!.reason})`);
+          console.log(chalk.yellow(`${name} was skipped (${wasSkipped.skipped!.reason})`));
         } else {
-          console.log(`${name} is not outdated or not installed.`);
+          console.log(chalk.yellow(`${name} is not outdated or not installed.`));
         }
       }
     }
@@ -77,38 +85,38 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   const formulae = targets.filter((p) => p.type === "formula");
   const casks = targets.filter((p) => p.type === "cask");
 
-  console.log("The following packages will be upgraded:\n");
+  console.log(chalk.bold("\nThe following packages will be upgraded:\n"));
 
   if (formulae.length > 0) {
-    console.log(`  Formulae (${formulae.length}):`);
+    console.log(chalk.bold(`  Formulae (${formulae.length}):`));
     for (const f of formulae) {
       console.log(
-        `    ${f.name}  ${f.installedVersions.join(", ")} -> ${f.currentVersion}`
+        `    ${chalk.white(f.name)}  ${chalk.red(shortVersion(f.installedVersions[0] ?? ""))} ${chalk.dim("→")} ${chalk.green(shortVersion(f.currentVersion))}`
       );
     }
     console.log("");
   }
 
   if (casks.length > 0) {
-    console.log(`  Casks (${casks.length}):`);
+    console.log(chalk.bold(`  Casks (${casks.length}):`));
     for (const c of casks) {
       console.log(
-        `    ${c.name}  ${c.installedVersions.join(", ")} -> ${c.currentVersion}`
+        `    ${chalk.white(c.name)}  ${chalk.red(shortVersion(c.installedVersions[0] ?? ""))} ${chalk.dim("→")} ${chalk.green(shortVersion(c.currentVersion))}`
       );
     }
     console.log("");
   }
 
   if (skipped.length > 0 && !options.only) {
-    console.log(`  Skipped (${skipped.length}):`);
+    console.log(chalk.dim(`  Skipped (${skipped.length}):`));
     for (const s of skipped) {
-      console.log(`    ${s.name}  (${s.skipped!.reason})`);
+      console.log(chalk.dim(`    ${s.name}  (${s.skipped!.reason})`));
     }
     console.log("");
   }
 
   console.log(
-    `${targets.length} package(s) to upgrade.`
+    `${chalk.bold(String(targets.length))} package(s) to upgrade.`
   );
 
   if (!options.yes) {
@@ -120,7 +128,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   }
 
   // Step 4: Upgrade
-  console.log("\nUpgrading...\n");
+  console.log(chalk.bold("\nUpgrading...\n"));
   const upgradeExitCode = await brewUpgradeStreaming(options.only);
 
   if (upgradeExitCode !== 0) {
@@ -128,17 +136,19 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     process.exit(1);
   }
 
-  console.log("\nDone.\n");
+  console.log("");
 
   // Step 5: Detect running processes
-  const progressLine = (msg: string) => {
-    process.stdout.write(`\r\x1b[KChecking running processes... ${msg}`);
-  };
-  progressLine("starting");
-  const detected = await detectRunningUpgrades(targets, progressLine);
-  process.stdout.write(`\r\x1b[KChecking running processes... done\n`);
+  const s2 = spinner("Checking running processes...");
+  const detected = await detectRunningUpgrades(targets, (msg) => s2.update(msg));
+  if (detected.length === 0) {
+    s2.done("No running apps or processes were affected");
+  } else {
+    s2.done(`${detected.length} running app(s) need restarting`);
+  }
 
   // Step 6: Report
+  console.log("");
   const report = formatReport(
     targets.length,
     formulae.length,
@@ -156,23 +166,23 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
 
   for (const app of detected) {
     if (restartAll) {
-      process.stdout.write(`Restarting ${app.displayName}... `);
+      process.stdout.write(`  ${chalk.cyan("⟳")} Restarting ${chalk.bold(app.displayName)}... `);
       const ok = await restartApp(app);
-      console.log(ok ? "done" : "failed");
+      console.log(ok ? chalk.green("done") : chalk.red("failed"));
     } else {
       const choice = await confirmRestart(app.displayName);
 
       if (choice === "all") {
         restartAll = true;
-        process.stdout.write(`Restarting ${app.displayName}... `);
+        process.stdout.write(`  ${chalk.cyan("⟳")} Restarting ${chalk.bold(app.displayName)}... `);
         const ok = await restartApp(app);
-        console.log(ok ? "done" : "failed");
+        console.log(ok ? chalk.green("done") : chalk.red("failed"));
       } else if (choice === "yes") {
-        process.stdout.write(`Restarting ${app.displayName}... `);
+        process.stdout.write(`  ${chalk.cyan("⟳")} Restarting ${chalk.bold(app.displayName)}... `);
         const ok = await restartApp(app);
-        console.log(ok ? "done" : "failed");
+        console.log(ok ? chalk.green("done") : chalk.red("failed"));
       } else {
-        console.log(`Skipped ${app.displayName}`);
+        console.log(chalk.dim(`  Skipped ${app.displayName}`));
       }
     }
   }

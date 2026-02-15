@@ -1,9 +1,11 @@
 import { brewUpdate, brewOutdated } from "../brew/runner.ts";
-import { parseOutdated, filterOutdated } from "../brew/parser.ts";
+import { parseOutdated, filterOutdated, type OutdatedPackage } from "../brew/parser.ts";
 import { detectRunningUpgrades, type DetectedApp } from "../detect/matcher.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
 import { spinner } from "../spinner.ts";
+import chalk from "chalk";
+import Table from "cli-table3";
 
 export async function status(): Promise<void> {
   const config = await loadConfig();
@@ -11,7 +13,7 @@ export async function status(): Promise<void> {
   const s1 = spinner("Updating Homebrew...");
   const updateResult = await brewUpdate();
   if (updateResult.exitCode !== 0) {
-    s1.done("Updating Homebrew... failed");
+    s1.fail("brew update failed");
     log.error({ stderr: updateResult.stderr }, "brew update failed");
     process.exit(1);
   }
@@ -38,33 +40,23 @@ export async function status(): Promise<void> {
   const s3 = spinner("Checking running processes...");
   const detected = await detectRunningUpgrades(actionable, (msg) => s3.update(msg));
   s3.done(`Checked ${actionable.length} packages against running processes`);
-  const runningSet = new Set(detected.map((d) => d.packageName));
+
+  const detectedMap = new Map(detected.map((d) => [d.packageName, d]));
 
   console.log("");
 
   const formulae = actionable.filter((p) => p.type === "formula");
   const casks = actionable.filter((p) => p.type === "cask");
 
+  // Render package tables
   if (formulae.length > 0) {
-    console.log(`Outdated formulae (${formulae.length}):`);
-    for (const f of formulae) {
-      const tag = runningSet.has(f.name) ? restartTag(detected, f.name) : "";
-      console.log(
-        `  ${f.name}  ${f.installedVersions.join(", ")} -> ${f.currentVersion}${tag}`
-      );
-    }
-    console.log("");
+    console.log(chalk.bold(`Outdated Formulae (${formulae.length})`));
+    console.log(renderPackageTable(formulae, detectedMap));
   }
 
   if (casks.length > 0) {
-    console.log(`Outdated casks (${casks.length}):`);
-    for (const c of casks) {
-      const tag = runningSet.has(c.name) ? restartTag(detected, c.name) : "";
-      console.log(
-        `  ${c.name}  ${c.installedVersions.join(", ")} -> ${c.currentVersion}${tag}`
-      );
-    }
-    console.log("");
+    console.log(chalk.bold(`Outdated Casks (${casks.length})`));
+    console.log(renderPackageTable(casks, detectedMap));
   }
 
   if (actionable.length === 0 && skipped.length > 0) {
@@ -72,29 +64,76 @@ export async function status(): Promise<void> {
   }
 
   if (skipped.length > 0) {
-    console.log(`Skipped (${skipped.length}):`);
+    console.log(chalk.dim(`Skipped (${skipped.length})`));
     for (const s of skipped) {
-      console.log(`  ${s.name}  (${s.skipped!.reason})`);
+      console.log(chalk.dim(`  ${s.name}  (${s.skipped!.reason})`));
     }
     console.log("");
   }
 
-  if (runningSet.size > 0) {
-    console.log(
-      `${runningSet.size} running app(s) will need restart after upgrade.`
-    );
+  // Summary
+  const parts: string[] = [];
+  parts.push(`${chalk.bold(String(actionable.length))} outdated`);
+  if (detectedMap.size > 0) {
+    parts.push(`${chalk.yellow.bold(String(detectedMap.size))} need restart`);
+  }
+  if (skipped.length > 0) {
+    parts.push(`${chalk.dim(String(skipped.length))} skipped`);
+  }
+  console.log(parts.join(chalk.dim(" · ")));
+}
+
+function renderPackageTable(
+  packages: OutdatedPackage[],
+  detectedMap: Map<string, DetectedApp>
+): string {
+  const table = new Table({
+    chars: borderlessChars,
+    style: { "padding-left": 1, "padding-right": 1, head: [] },
+  });
+
+  for (const pkg of packages) {
+    const detected = detectedMap.get(pkg.name);
+    const statusCell = detected ? formatStatus(detected) : "";
+
+    table.push([
+      chalk.white(pkg.name),
+      chalk.red(shortVersion(pkg.installedVersions[0] ?? "")),
+      chalk.dim("→"),
+      chalk.green(shortVersion(pkg.currentVersion)),
+      statusCell,
+    ]);
+  }
+
+  return table.toString() + "\n";
+}
+
+/**
+ * Shorten brew version strings for display.
+ * Casks often use "version,build_hash" — strip the hash.
+ * Truncate anything over 16 chars.
+ */
+function shortVersion(v: string): string {
+  // Strip build hash after comma (e.g., "1.1.2321,495628f91f..." → "1.1.2321")
+  const base = v.includes(",") ? v.split(",")[0]! : v;
+  if (base.length > 20) return base.slice(0, 18) + "…";
+  return base;
+}
+
+function formatStatus(app: DetectedApp): string {
+  switch (app.kind) {
+    case "cask-gui":
+      return chalk.yellow("⟳ restart needed");
+    case "formula-service":
+      return chalk.yellow("⟳ service restart");
+    case "formula-cli":
+      return chalk.blue("● running");
   }
 }
 
-function restartTag(detected: DetectedApp[], packageName: string): string {
-  const match = detected.find((d) => d.packageName === packageName);
-  if (!match) return "";
-
-  const labels: Record<DetectedApp["kind"], string> = {
-    "cask-gui": "restart needed",
-    "formula-cli": "running",
-    "formula-service": "service restart needed",
-  };
-
-  return `  ← ${labels[match.kind]}`;
-}
+const borderlessChars = {
+  top: "", "top-mid": "", "top-left": "", "top-right": "",
+  bottom: "", "bottom-mid": "", "bottom-left": "", "bottom-right": "",
+  left: "", "left-mid": "", mid: "", "mid-mid": "",
+  right: "", "right-mid": "", middle: "",
+};

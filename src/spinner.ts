@@ -1,10 +1,14 @@
+import chalk from "chalk";
+
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 export interface Spinner {
   /** Update the detail line below the spinner */
   update(detail: string): void;
-  /** Stop the spinner and show a final message */
+  /** Stop the spinner and show a final message (green checkmark) */
   done(message?: string): void;
+  /** Stop the spinner and show a failure message (red cross) */
+  fail(message?: string): void;
 }
 
 /**
@@ -12,6 +16,9 @@ export interface Spinner {
  *
  *   ⠋ Checking running processes...
  *     gathering system state
+ *
+ * Resolves to:
+ *   ✓ 12 packages checked, 6 need restart
  */
 export function spinner(title: string): Spinner {
   let frame = 0;
@@ -19,16 +26,14 @@ export function spinner(title: string): Spinner {
   let stopped = false;
 
   const render = () => {
-    // Move up 2 lines, clear both, redraw
-    const symbol = FRAMES[frame % FRAMES.length];
-    const detailLine = detail ? `  ${detail}` : "";
+    const symbol = chalk.cyan(FRAMES[frame % FRAMES.length]);
+    const detailLine = detail ? `  ${chalk.dim(detail)}` : "";
     process.stderr.write(`\x1b[?25l`); // hide cursor
     process.stderr.write(`\r\x1b[K${symbol} ${title}\n\x1b[K${detailLine}\x1b[A`);
   };
 
-  // Initial render with blank detail line
-  process.stderr.write(`\n`); // reserve detail line
-  process.stderr.write(`\x1b[A`); // move back up
+  // Reserve detail line and position cursor
+  process.stderr.write(`\n\x1b[A`);
   render();
 
   const interval = setInterval(() => {
@@ -37,18 +42,23 @@ export function spinner(title: string): Spinner {
     render();
   }, 80);
 
+  const stop = (symbol: string, message: string) => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(interval);
+    // Clear both lines, write final single line, show cursor
+    process.stderr.write(`\r\x1b[K${symbol} ${message}\n\x1b[K\x1b[?25h`);
+  };
+
   return {
     update(msg: string) {
       detail = msg;
-      render();
     },
     done(message?: string) {
-      if (stopped) return;
-      stopped = true;
-      clearInterval(interval);
-      const finalMsg = message ?? title;
-      // Clear both lines and write final result
-      process.stderr.write(`\r\x1b[K✓ ${finalMsg}\n\x1b[K\x1b[?25h`);
+      stop(chalk.green("✓"), message ?? title.replace(/\.{3}$/, ""));
+    },
+    fail(message?: string) {
+      stop(chalk.red("✗"), message ?? title.replace(/\.{3}$/, " failed"));
     },
   };
 }
