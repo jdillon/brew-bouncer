@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: bun-darwin-arm64
+            artifact: brew-bouncer-darwin-arm64
+          - os: macos-13
+            target: bun-darwin-x64
+            artifact: brew-bouncer-darwin-x64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Build native binary
+        run: |
+          bun build --compile --target=${{ matrix.target }} src/index.ts \
+            --outfile dist/${{ matrix.artifact }}
+
+      - name: Verify binary
+        if: matrix.target == 'bun-darwin-arm64'
+        run: dist/${{ matrix.artifact }} --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Validate version matches package.json
+        run: |
+          PKG_VERSION=$(jq -r .version package.json)
+          if [ "$PKG_VERSION" != "${{ steps.version.outputs.version }}" ]; then
+            echo "::error::Tag version (${{ steps.version.outputs.version }}) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: Prepare release assets
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd dist
+
+          # Flatten artifact directories
+          mv brew-bouncer-darwin-arm64/brew-bouncer-darwin-arm64 .
+          mv brew-bouncer-darwin-x64/brew-bouncer-darwin-x64 .
+          rmdir brew-bouncer-darwin-arm64 brew-bouncer-darwin-x64
+
+          chmod +x brew-bouncer-darwin-*
+
+          # Compute checksums
+          sha256sum brew-bouncer-darwin-* > checksums.txt
+          cat checksums.txt
+
+      - name: Extract checksums
+        id: checksum
+        run: |
+          ARM64_SHA=$(awk '/darwin-arm64/{print $1}' dist/checksums.txt)
+          X64_SHA=$(awk '/darwin-x64/{print $1}' dist/checksums.txt)
+          echo "arm64=${ARM64_SHA}" >> $GITHUB_OUTPUT
+          echo "x64=${X64_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: |
+            dist/brew-bouncer-darwin-arm64
+            dist/brew-bouncer-darwin-x64
+            dist/checksums.txt
+          generate_release_notes: true
+          draft: false
+
+      - name: Update Homebrew formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not set - skipping Homebrew update"
+            exit 0
+          fi
+
+          VERSION="${{ steps.version.outputs.version }}"
+          ARM64_SHA="${{ steps.checksum.outputs.arm64 }}"
+          X64_SHA="${{ steps.checksum.outputs.x64 }}"
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/jdillon/homebrew-planet57.git" tap
+
+          cp .github/formula-template.rb tap/Formula/brew-bouncer.rb
+          sed -i "s/__VERSION__/${VERSION}/g" tap/Formula/brew-bouncer.rb
+          sed -i "s/__SHA256_ARM64__/${ARM64_SHA}/g" tap/Formula/brew-bouncer.rb
+          sed -i "s/__SHA256_X64__/${X64_SHA}/g" tap/Formula/brew-bouncer.rb
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/brew-bouncer.rb
+          git commit -m "Update brew-bouncer to ${VERSION}"
+          git push

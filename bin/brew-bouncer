@@ -10,9 +10,6 @@
 #:  Update, upgrade, and interactively restart affected apps.
 #:  Use `--yes` to skip confirmations.
 #:
-#:  `brew bouncer restart`
-#:  Detect and restart upgraded apps/processes.
-#:
 #:  `--debug`   Show debug-level log output
 #:  `--verbose` Show info-level log output
 #:  `--quiet`   Suppress warnings, show errors only
