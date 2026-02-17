@@ -1,0 +1,46 @@
+{
+  "src": [
+    "src/**/*.ts"
+  ],
+  "path": "license-header.txt",
+  "ignore": [
+    ".DS_Store",
+    ".gitignore",
+    ".gitattributes",
+    ".beads/**/*",
+    ".claude/**/*",
+    ".idea/**/*",
+    "node_modules/**/*",
+    "bin/**/*",
+    "dist/**/*",
+    "tmp/**/*",
+    "sandbox/**/*",
+    "docs/**/*",
+    "**/*.d.ts",
+    "**/*.md",
+    "**/*.json",
+    "**/*.yml",
+    "**/*.yaml",
+    "**/*.toml",
+    "**/*.lock"
+  ],
+  "license": "license-header.txt",
+  "default_format": {
+    "prepend": "/*",
+    "append": " */",
+    "eachLine": {
+      "prepend": " * "
+    }
+  },
+  "licenseFormats": {
+    "ts|js": {
+      "prepend": "/*",
+      "append": " */",
+      "eachLine": {
+        "prepend": " * "
+      }
+    }
+  },
+  "trailingWhitespace": "TRIM",
+  "insert": "true"
+}

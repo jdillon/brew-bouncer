@@ -17,6 +17,9 @@ jobs:
 
       - run: bun install
 
+      - name: License headers
+        run: bun run license:check
+
       - name: Typecheck
         run: bun run typecheck
 
