@@ -1,18 +1,21 @@
 #!/bin/bash
-#:  * `bouncer` [<subcommand>]
+#:  * `bouncer` [options] [command]
 #:
-#:  Homebrew upgrade manager — update, upgrade, and restart what needs it.
+#:  Homebrew upgrade manager — update, upgrade, and restart what needs it
 #:
-#:  `brew bouncer status`
-#:  Show outdated packages and detect which running apps need restarting.
+#:  Options:
+#:    -V, --version                    output the version number
+#:    --debug                          Debug log output
+#:    --verbose                        Info-level log output
+#:    --quiet                          Errors only
 #:
-#:  `brew bouncer upgrade` [<packages...>]
-#:  Update, upgrade, and interactively restart affected apps.
-#:  Use `--yes` to skip confirmations.
+#:  Commands:
+#:    upgrade [options] [packages...]  Update, upgrade, and detect what needs restarting
+#:    status                           Show outdated packages without upgrading
+#:    help [command]                   display help for command
 #:
-#:  `--debug`   Show debug-level log output
-#:  `--verbose` Show info-level log output
-#:  `--quiet`   Suppress warnings, show errors only
+#:  Brew intercepts `--help`; use `brew bouncer help [command]` for subcommand details.
+#:  For example: `brew bouncer help upgrade`
 
 # Resolve to the actual source directory regardless of symlinks
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")" && pwd)"
