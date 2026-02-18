@@ -23,6 +23,7 @@ export async function restartApp(app: DetectedApp): Promise<boolean> {
       return restartGuiApp(app);
     case "formula-service":
       return restartService(app);
+    case "cask-cli":
     case "formula-cli":
       return restartCliProcess(app);
   }

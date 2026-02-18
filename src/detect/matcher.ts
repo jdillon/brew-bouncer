@@ -23,6 +23,7 @@ import {
 import {
   parseBrewInfo,
   extractCaskAppNames,
+  extractCaskBinaryNames,
   extractCaskPkgIds,
   parseBrewServices,
 } from "../brew/parser.ts";
@@ -42,7 +43,7 @@ export interface DetectedApp {
   packageName: string;
   oldVersion: string;
   newVersion: string;
-  kind: "cask-gui" | "formula-cli" | "formula-service";
+  kind: "cask-gui" | "cask-cli" | "formula-cli" | "formula-service";
   displayName: string;
   pids: number[];
 }
@@ -103,6 +104,27 @@ export async function detectRunningUpgrades(
           displayName: matched[0]!.bundleName,
           pids: [],
         });
+        continue;
+      }
+
+      // Fallback: check binary artifacts against running processes
+      // Casks like claude-code install CLI binaries, not .app bundles
+      const binaryNames = extractCaskBinaryNames(cask);
+      if (binaryNames.length > 0) {
+        const binMatched = matchFormulaToRunningProcesses(
+          binaryNames,
+          runningProcesses
+        );
+        if (binMatched.length > 0) {
+          detected.push({
+            packageName: pkg.name,
+            oldVersion: pkg.installedVersions[0] ?? "unknown",
+            newVersion: pkg.currentVersion,
+            kind: "cask-cli",
+            displayName: binMatched[0]!.name,
+            pids: binMatched.map((m) => m.pid),
+          });
+        }
       }
     }
   }
@@ -110,7 +132,7 @@ export async function detectRunningUpgrades(
   // Process formulae — batch brew list calls with concurrency limit
   if (formulae.length > 0) {
     let checked = 0;
-    onProgress?.(`checking formulae (0/${formulae.length})`);
+    onProgress?.(`checking packages (0/${formulae.length})`);
 
     const formulaResults = await pool(
       formulae,
@@ -155,7 +177,7 @@ export async function detectRunningUpgrades(
         concurrency: 8,
         onProgress: (done, total) => {
           checked = done;
-          onProgress?.(`checking formulae (${done}/${total})`);
+          onProgress?.(`checking packages (${done}/${total})`);
         },
       }
     );

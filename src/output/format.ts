@@ -34,6 +34,7 @@ export function formatStatus(app: DetectedApp): string {
       return chalk.yellow("⟳ restart needed");
     case "formula-service":
       return chalk.yellow("⟳ service restart");
+    case "cask-cli":
     case "formula-cli":
       return chalk.blue("● running");
   }

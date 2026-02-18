@@ -111,7 +111,7 @@ export async function confirmRestart(appName: string): Promise<RestartChoice> {
 
   try {
     const answer = await rl.question(
-      `Restart ${appName}? [y/N/a(ll)] `
+      `Restart ${appName}? [${chalk.dim("y")}/${chalk.bold("N")}/${chalk.cyan("a")}ll] `
     );
     const trimmed = answer.trim().toLowerCase();
 

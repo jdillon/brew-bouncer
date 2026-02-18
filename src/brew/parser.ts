@@ -160,6 +160,25 @@ export function extractCaskAppNames(cask: BrewCask): string[] {
 }
 
 /**
+ * Extract binary names from a cask's artifacts.
+ * Casks like claude-code install CLI binaries instead of .app bundles.
+ */
+export function extractCaskBinaryNames(cask: BrewCask): string[] {
+  const binaries: string[] = [];
+  for (const artifact of cask.artifacts) {
+    if ("binary" in artifact && Array.isArray(artifact.binary)) {
+      for (const bin of artifact.binary) {
+        if (typeof bin === "string") {
+          // Extract just the binary name (last path component)
+          binaries.push(bin.split("/").pop() ?? bin);
+        }
+      }
+    }
+  }
+  return binaries;
+}
+
+/**
  * Extract pkgutil identifiers from a cask's uninstall stanza.
  * Used as a fallback for pkg-installed casks that don't declare an "app" artifact.
  */
