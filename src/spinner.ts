@@ -41,8 +41,14 @@ export function spinner(title: string): Spinner {
   let stopped = false;
 
   const render = () => {
+    const cols = process.stderr.columns || 80;
     const symbol = chalk.cyan(FRAMES[frame % FRAMES.length]);
-    const detailLine = detail ? `  ${chalk.dim(detail)}` : "";
+    // Truncate detail to fit in one terminal line (2 chars indent + content)
+    const maxDetail = cols - 4;
+    const truncated = detail.length > maxDetail
+      ? detail.slice(0, maxDetail - 1) + "…"
+      : detail;
+    const detailLine = truncated ? `  ${chalk.dim(truncated)}` : "";
     process.stderr.write(`\x1b[?25l`); // hide cursor
     process.stderr.write(`\r\x1b[K${symbol} ${title}\n\x1b[K${detailLine}\x1b[A`);
   };

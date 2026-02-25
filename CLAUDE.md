@@ -41,12 +41,12 @@ brew update → brew outdated --greedy --json → filter → detect running proc
 - **Explicit package names to brew upgrade** — never `brew upgrade --greedy` without a package list. What the user sees in the preview = exactly what gets upgraded.
 - **Installer-manual cask detection** — casks with `installer: { manual: ... }` artifacts are filtered to "skipped" because brew refuses to auto-upgrade them (would cause exit code 1).
 - **Never bail on upgrade failure** — brew returns 1 for partial failures. Always continue to detection and restart, which is the whole point of the tool.
-- **execTee for output capture** — during upgrade, full brew output goes to `~/.local/state/brew-bouncer/upgrade-YYYY-MM-DD.log` while a spinner runs. Warnings/errors/caveats are surfaced after completion. `--verbose` falls back to streaming passthrough.
+- **Per-package passthrough upgrades** — each package is upgraded individually via `execStreaming` (inherit), so brew owns the terminal. The user sees all output including prompts, caveats, and errors in real time.
 
 ### Module responsibilities
 
 - `src/commands/` — orchestration only, no brew logic
-- `src/brew/runner.ts` — all subprocess execution (`exec`, `execStreaming`, `execTee`). Hardcoded to `/opt/homebrew/bin/brew`.
+- `src/brew/runner.ts` — all subprocess execution (`exec`, `execStreaming`). Hardcoded to `/opt/homebrew/bin/brew`.
 - `src/brew/parser.ts` — JSON/text parsing, package filtering, installer-manual detection. Pure functions, no I/O.
 - `src/detect/` — maps packages to running processes using multiple strategies:
   - Casks: osascript (System Events) + ps (.app bundles) + pkgutil fallback

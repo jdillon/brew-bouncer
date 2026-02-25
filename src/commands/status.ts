@@ -84,10 +84,13 @@ export async function status(): Promise<void> {
   if (actionable.length > 0) {
     console.log(chalk.bold(`Outdated (${actionable.length})`));
     console.log(renderPackageTable(actionable, detectedMap));
-  } else if (skipped.length > 0) {
-    console.log("Everything is up to date (after filtering).");
   }
 
   renderSkipped(skipped);
-  renderSummary(actionable.length, detectedMap.size, skipped.length);
+
+  if (actionable.length > 0 || skipped.length > 0) {
+    renderSummary(actionable.length, detectedMap.size, skipped.length);
+  } else {
+    console.log("Nothing to upgrade.");
+  }
 }
