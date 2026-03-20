@@ -22,7 +22,8 @@ import {
 } from "../brew/parser.ts";
 import { detectRunningUpgrades, type DetectedApp } from "../detect/matcher.ts";
 import { restartApp } from "../restart.ts";
-import { confirmUpgrade, selectPackages, confirmRestart } from "../prompt.ts";
+import { confirmUpgrade, selectPackages, confirmRestart, confirmQuarantinePolicy, type PolicyChoice } from "../prompt.ts";
+import { snapshotCaskQuarantine, removeQuarantine, type QuarantineInfo } from "../quarantine.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
 import { spinner } from "../spinner.ts";
@@ -67,12 +68,13 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   // Step 3: Fetch cask info to detect installer-manual casks
   const casks = allOutdated.filter((p) => p.type === "cask");
   let installerManualCasks = new Set<string>();
+  let caskInfoParsed: ReturnType<typeof parseBrewInfo> | null = null;
 
   if (casks.length > 0) {
     const caskInfoResult = await brewInfoJson(casks.map((c) => c.name));
     if (caskInfoResult.exitCode === 0) {
-      const info = parseBrewInfo(caskInfoResult.stdout);
-      installerManualCasks = detectInstallerManualCasks(info.casks);
+      caskInfoParsed = parseBrewInfo(caskInfoResult.stdout);
+      installerManualCasks = detectInstallerManualCasks(caskInfoParsed.casks);
     }
   }
 
@@ -133,6 +135,23 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     s3.done(`${preDetected.length} running app(s) will need restarting`);
   }
 
+  // Step 5b: Snapshot quarantine status for cask targets
+  const caskTargets = targets.filter((p) => p.type === "cask");
+  let approvedApps = new Map<string, QuarantineInfo>();
+
+  if (caskTargets.length > 0 && caskInfoParsed) {
+    const s4 = spinner("Checking quarantine status...");
+    approvedApps = await snapshotCaskQuarantine(
+      caskTargets.map((c) => c.name),
+      caskInfoParsed.casks
+    );
+    if (approvedApps.size === 0) {
+      s4.done("No previously-approved apps to unquarantine");
+    } else {
+      s4.done(`${approvedApps.size} previously-approved app(s) will be re-quarantined`);
+    }
+  }
+
   // Step 6: Show preview and confirm
   console.log(chalk.bold(`\nThe following packages will be upgraded (${targets.length}):\n`));
   console.log(renderPackageTable(targets, detectedMap));
@@ -161,6 +180,17 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     }
   }
 
+  // Step 6b: Ask quarantine policy (only when previously-approved apps in final target list)
+  const approvedInTargets = targets.filter((p) => approvedApps.has(p.name));
+  let quarantinePolicy: PolicyChoice = "no";
+  if (approvedInTargets.length > 0) {
+    if (options.yes) {
+      quarantinePolicy = "yes";
+    } else {
+      quarantinePolicy = await confirmQuarantinePolicy(approvedInTargets.length);
+    }
+  }
+
   console.log("");
 
   // Step 7: Upgrade packages one at a time, restarting affected apps immediately
@@ -170,6 +200,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   let restartedCount = 0;
   let restartSkippedCount = 0;
   let manualRestartCount = 0;
+  let unquarantinedCount = 0;
   let restartAll = options.yes;
 
   for (const pkg of targets) {
@@ -184,6 +215,22 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
       failCount++;
       console.log("");
       continue;
+    }
+
+    // Remove quarantine if this cask was previously approved
+    const approved = approvedApps.get(pkg.name);
+    if (approved && quarantinePolicy !== "no") {
+      if (quarantinePolicy === "yes") {
+        const ok = await doUnquarantine(approved);
+        if (ok) unquarantinedCount++;
+      } else {
+        // quarantinePolicy === "ask"
+        const choice = await confirmUnquarantine(approved.appPath);
+        if (choice) {
+          const ok = await doUnquarantine(approved);
+          if (ok) unquarantinedCount++;
+        }
+      }
     }
 
     // Restart immediately if this package had a running process
@@ -221,6 +268,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   const parts: string[] = [];
   parts.push(`${targets.length - failCount} upgraded`);
   if (failCount > 0) parts.push(chalk.yellow(`${failCount} failed`));
+  if (unquarantinedCount > 0) parts.push(chalk.green(`${unquarantinedCount} unquarantined`));
   if (restartedCount > 0) parts.push(chalk.cyan(`${restartedCount} restarted`));
   if (restartSkippedCount > 0) parts.push(chalk.dim(`${restartSkippedCount} restart skipped`));
   if (manualRestartCount > 0) {
@@ -238,4 +286,29 @@ async function doRestart(app: DetectedApp): Promise<boolean> {
   const ok = await restartApp(app);
   console.log(ok ? chalk.green("done") : chalk.red("failed"));
   return ok;
+}
+
+async function doUnquarantine(info: QuarantineInfo): Promise<boolean> {
+  process.stdout.write(`  ${chalk.green("🔓")} Removing quarantine from ${chalk.bold(info.appPath)}... `);
+  const ok = await removeQuarantine(info.appPath);
+  console.log(ok ? chalk.green("done") : chalk.red("failed"));
+  return ok;
+}
+
+async function confirmUnquarantine(appPath: string): Promise<boolean> {
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await rl.question(
+      `  Remove quarantine from ${appPath}? [${chalk.bold("Y")}/${chalk.dim("n")}] `
+    );
+    const trimmed = answer.trim().toLowerCase();
+    return trimmed !== "n" && trimmed !== "no";
+  } finally {
+    rl.close();
+  }
 }

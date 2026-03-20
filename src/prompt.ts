@@ -97,6 +97,33 @@ export async function selectPackages(
   return packages.filter((p) => selectedSet.has(p.name));
 }
 
+export type PolicyChoice = "yes" | "ask" | "no";
+
+/**
+ * Prompt for quarantine policy before upgrades begin.
+ * yes = auto-remove quarantine from all previously-approved apps,
+ * ask = prompt per app, no = don't touch quarantine.
+ */
+export async function confirmQuarantinePolicy(approvedCount: number): Promise<PolicyChoice> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await rl.question(
+      `Remove quarantine from ${approvedCount} previously-approved app(s) after upgrade? [${chalk.dim("y")}es / ${chalk.bold("N")}o / as${chalk.cyan("k")}] `
+    );
+    const trimmed = answer.trim().toLowerCase();
+
+    if (trimmed === "y" || trimmed === "yes") return "yes";
+    if (trimmed === "k" || trimmed === "ask") return "ask";
+    return "no";
+  } finally {
+    rl.close();
+  }
+}
+
 export type RestartChoice = "yes" | "no" | "all";
 
 /**
