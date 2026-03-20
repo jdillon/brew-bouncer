@@ -169,6 +169,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   let failCount = 0;
   let restartedCount = 0;
   let restartSkippedCount = 0;
+  let manualRestartCount = 0;
   let restartAll = options.yes;
 
   for (const pkg of targets) {
@@ -188,21 +189,27 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     // Restart immediately if this package had a running process
     const app = detectedMap.get(pkg.name);
     if (app) {
-      if (restartAll) {
-        const ok = await doRestart(app);
-        if (ok) restartedCount++;
+      if (isManualRestartOnly(app)) {
+        const pids = app.pids.length > 0 ? ` (PID ${app.pids.join(", ")})` : "";
+        console.log(chalk.dim(`  ${app.displayName}${pids}: restart manually`));
+        manualRestartCount++;
       } else {
-        const choice = await confirmRestart(app.displayName);
-        if (choice === "all") {
-          restartAll = true;
-          const ok = await doRestart(app);
-          if (ok) restartedCount++;
-        } else if (choice === "yes") {
+        if (restartAll) {
           const ok = await doRestart(app);
           if (ok) restartedCount++;
         } else {
-          console.log(chalk.dim(`  Skipped ${app.displayName}`));
-          restartSkippedCount++;
+          const choice = await confirmRestart(app.displayName);
+          if (choice === "all") {
+            restartAll = true;
+            const ok = await doRestart(app);
+            if (ok) restartedCount++;
+          } else if (choice === "yes") {
+            const ok = await doRestart(app);
+            if (ok) restartedCount++;
+          } else {
+            console.log(chalk.dim(`  Skipped ${app.displayName}`));
+            restartSkippedCount++;
+          }
         }
       }
     }
@@ -216,7 +223,14 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   if (failCount > 0) parts.push(chalk.yellow(`${failCount} failed`));
   if (restartedCount > 0) parts.push(chalk.cyan(`${restartedCount} restarted`));
   if (restartSkippedCount > 0) parts.push(chalk.dim(`${restartSkippedCount} restart skipped`));
+  if (manualRestartCount > 0) {
+    parts.push(chalk.dim(`${manualRestartCount} manual restart required`));
+  }
   console.log(parts.join(chalk.dim(" · ")));
+}
+
+function isManualRestartOnly(app: DetectedApp): boolean {
+  return app.kind === "cask-cli" || app.kind === "formula-cli";
 }
 
 async function doRestart(app: DetectedApp): Promise<boolean> {
@@ -225,4 +239,3 @@ async function doRestart(app: DetectedApp): Promise<boolean> {
   console.log(ok ? chalk.green("done") : chalk.red("failed"));
   return ok;
 }
-
