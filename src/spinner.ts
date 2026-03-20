@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Jason Dillon
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 import chalk from "chalk";
 
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -26,8 +41,14 @@ export function spinner(title: string): Spinner {
   let stopped = false;
 
   const render = () => {
+    const cols = process.stderr.columns || 80;
     const symbol = chalk.cyan(FRAMES[frame % FRAMES.length]);
-    const detailLine = detail ? `  ${chalk.dim(detail)}` : "";
+    // Truncate detail to fit in one terminal line (2 chars indent + content)
+    const maxDetail = cols - 4;
+    const truncated = detail.length > maxDetail
+      ? detail.slice(0, maxDetail - 1) + "…"
+      : detail;
+    const detailLine = truncated ? `  ${chalk.dim(truncated)}` : "";
     process.stderr.write(`\x1b[?25l`); // hide cursor
     process.stderr.write(`\r\x1b[K${symbol} ${title}\n\x1b[K${detailLine}\x1b[A`);
   };

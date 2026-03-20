@@ -1,11 +1,31 @@
-import { brewUpdate, brewOutdated } from "../brew/runner.ts";
-import { parseOutdated, filterOutdated, type OutdatedPackage } from "../brew/parser.ts";
-import { detectRunningUpgrades, type DetectedApp } from "../detect/matcher.ts";
+/*
+ * Copyright 2026 Jason Dillon
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+import { brewUpdate, brewOutdated, brewInfoJson } from "../brew/runner.ts";
+import {
+  parseOutdated,
+  filterOutdated,
+  parseBrewInfo,
+  detectInstallerManualCasks,
+} from "../brew/parser.ts";
+import { detectRunningUpgrades } from "../detect/matcher.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
 import { spinner } from "../spinner.ts";
+import { renderPackageTable, renderSkipped, renderSummary } from "../output/format.ts";
 import chalk from "chalk";
-import Table from "cli-table3";
 
 export async function status(): Promise<void> {
   const config = await loadConfig();
@@ -34,7 +54,23 @@ export async function status(): Promise<void> {
   }
   s2.done(`${allOutdated.length} outdated packages found`);
 
-  const { actionable, skipped } = filterOutdated(allOutdated, config.ignore);
+  // Detect installer-manual casks so they show as skipped
+  const caskPkgs = allOutdated.filter((p) => p.type === "cask");
+  let installerManualCasks = new Set<string>();
+
+  if (caskPkgs.length > 0) {
+    const caskInfoResult = await brewInfoJson(caskPkgs.map((c) => c.name));
+    if (caskInfoResult.exitCode === 0) {
+      const info = parseBrewInfo(caskInfoResult.stdout);
+      installerManualCasks = detectInstallerManualCasks(info.casks);
+    }
+  }
+
+  const { actionable, skipped } = filterOutdated(
+    allOutdated,
+    config.ignore,
+    installerManualCasks
+  );
 
   // Detect which outdated packages have running processes
   const s3 = spinner("Checking running processes...");
@@ -45,95 +81,16 @@ export async function status(): Promise<void> {
 
   console.log("");
 
-  const formulae = actionable.filter((p) => p.type === "formula");
-  const casks = actionable.filter((p) => p.type === "cask");
-
-  // Render package tables
-  if (formulae.length > 0) {
-    console.log(chalk.bold(`Outdated Formulae (${formulae.length})`));
-    console.log(renderPackageTable(formulae, detectedMap));
+  if (actionable.length > 0) {
+    console.log(chalk.bold(`Outdated (${actionable.length})`));
+    console.log(renderPackageTable(actionable, detectedMap));
   }
 
-  if (casks.length > 0) {
-    console.log(chalk.bold(`Outdated Casks (${casks.length})`));
-    console.log(renderPackageTable(casks, detectedMap));
-  }
+  renderSkipped(skipped);
 
-  if (actionable.length === 0 && skipped.length > 0) {
-    console.log("Everything is up to date (after filtering).");
-  }
-
-  if (skipped.length > 0) {
-    console.log(chalk.dim(`Skipped (${skipped.length})`));
-    for (const s of skipped) {
-      console.log(chalk.dim(`  ${s.name}  (${s.skipped!.reason})`));
-    }
-    console.log("");
-  }
-
-  // Summary
-  const parts: string[] = [];
-  parts.push(`${chalk.bold(String(actionable.length))} outdated`);
-  if (detectedMap.size > 0) {
-    parts.push(`${chalk.yellow.bold(String(detectedMap.size))} need restart`);
-  }
-  if (skipped.length > 0) {
-    parts.push(`${chalk.dim(String(skipped.length))} skipped`);
-  }
-  console.log(parts.join(chalk.dim(" · ")));
-}
-
-function renderPackageTable(
-  packages: OutdatedPackage[],
-  detectedMap: Map<string, DetectedApp>
-): string {
-  const table = new Table({
-    chars: borderlessChars,
-    style: { "padding-left": 1, "padding-right": 1, head: [] },
-  });
-
-  for (const pkg of packages) {
-    const detected = detectedMap.get(pkg.name);
-    const statusCell = detected ? formatStatus(detected) : "";
-
-    table.push([
-      chalk.white(pkg.name),
-      chalk.red(shortVersion(pkg.installedVersions[0] ?? "")),
-      chalk.dim("→"),
-      chalk.green(shortVersion(pkg.currentVersion)),
-      statusCell,
-    ]);
-  }
-
-  return table.toString() + "\n";
-}
-
-/**
- * Shorten brew version strings for display.
- * Casks often use "version,build_hash" — strip the hash.
- * Truncate anything over 16 chars.
- */
-function shortVersion(v: string): string {
-  // Strip build hash after comma (e.g., "1.1.2321,495628f91f..." → "1.1.2321")
-  const base = v.includes(",") ? v.split(",")[0]! : v;
-  if (base.length > 20) return base.slice(0, 18) + "…";
-  return base;
-}
-
-function formatStatus(app: DetectedApp): string {
-  switch (app.kind) {
-    case "cask-gui":
-      return chalk.yellow("⟳ restart needed");
-    case "formula-service":
-      return chalk.yellow("⟳ service restart");
-    case "formula-cli":
-      return chalk.blue("● running");
+  if (actionable.length > 0 || skipped.length > 0) {
+    renderSummary(actionable.length, detectedMap.size, skipped.length);
+  } else {
+    console.log("Nothing to upgrade.");
   }
 }
-
-const borderlessChars = {
-  top: "", "top-mid": "", "top-left": "", "top-right": "",
-  bottom: "", "bottom-mid": "", "bottom-left": "", "bottom-right": "",
-  left: "", "left-mid": "", mid: "", "mid-mid": "",
-  right: "", "right-mid": "", middle: "",
-};

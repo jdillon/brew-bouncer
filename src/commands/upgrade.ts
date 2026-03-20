@@ -1,54 +1,87 @@
-import { brewUpdateStreaming, brewOutdated, brewUpgradeStreaming } from "../brew/runner.ts";
-import { parseOutdated, filterOutdated, type OutdatedPackage } from "../brew/parser.ts";
-import { detectRunningUpgrades } from "../detect/matcher.ts";
-import { formatReport } from "../output/reporter.ts";
+/*
+ * Copyright 2026 Jason Dillon
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+import { brewUpdate, brewOutdated, brewUpgrade, brewInfoJson, exec } from "../brew/runner.ts";
+import {
+  parseOutdated,
+  filterOutdated,
+  parseBrewInfo,
+  detectInstallerManualCasks,
+} from "../brew/parser.ts";
+import { detectRunningUpgrades, type DetectedApp } from "../detect/matcher.ts";
 import { restartApp } from "../restart.ts";
-import { confirm, confirmRestart } from "../prompt.ts";
+import { confirmUpgrade, selectPackages, confirmRestart } from "../prompt.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
 import { spinner } from "../spinner.ts";
+import { renderPackageTable, renderSkipped, renderSummary } from "../output/format.ts";
 import chalk from "chalk";
-
-function shortVersion(v: string): string {
-  const base = v.includes(",") ? v.split(",")[0]! : v;
-  if (base.length > 20) return base.slice(0, 18) + "…";
-  return base;
-}
 
 interface UpgradeOptions {
   yes: boolean;
+  verbose: boolean;
   only?: string[];
 }
 
 export async function upgrade(options: UpgradeOptions): Promise<void> {
   const config = await loadConfig();
 
-  // Step 1: Update
-  console.log(chalk.bold("Updating Homebrew...\n"));
-  const updateExitCode = await brewUpdateStreaming();
-  if (updateExitCode !== 0) {
-    log.error("brew update failed");
+  // Step 1: Update (piped + spinner, same as status)
+  const s1 = spinner("Updating Homebrew...");
+  const updateResult = await brewUpdate();
+  if (updateResult.exitCode !== 0) {
+    s1.fail("brew update failed");
+    log.error({ stderr: updateResult.stderr }, "brew update failed");
     process.exit(1);
   }
-  console.log("");
+  s1.done("Homebrew updated");
 
   // Step 2: Get outdated list
-  const s1 = spinner("Checking for outdated packages...");
+  const s2 = spinner("Checking for outdated packages...");
   const outdatedResult = await brewOutdated();
 
   if (outdatedResult.exitCode !== 0 || !outdatedResult.stdout.trim()) {
-    s1.done("Everything is up to date.");
+    s2.done("Everything is up to date.");
     return;
   }
 
   const allOutdated = parseOutdated(outdatedResult.stdout);
   if (allOutdated.length === 0) {
-    s1.done("Everything is up to date.");
+    s2.done("Everything is up to date.");
     return;
   }
-  s1.done(`${allOutdated.length} outdated packages found`);
+  s2.done(`${allOutdated.length} outdated packages found`);
 
-  const { actionable, skipped } = filterOutdated(allOutdated, config.ignore);
+  // Step 3: Fetch cask info to detect installer-manual casks
+  const casks = allOutdated.filter((p) => p.type === "cask");
+  let installerManualCasks = new Set<string>();
+
+  if (casks.length > 0) {
+    const caskInfoResult = await brewInfoJson(casks.map((c) => c.name));
+    if (caskInfoResult.exitCode === 0) {
+      const info = parseBrewInfo(caskInfoResult.stdout);
+      installerManualCasks = detectInstallerManualCasks(info.casks);
+    }
+  }
+
+  // Step 4: Filter
+  const { actionable, skipped } = filterOutdated(
+    allOutdated,
+    config.ignore,
+    installerManualCasks
+  );
 
   // If specific packages requested, filter to just those
   let targets = actionable;
@@ -65,7 +98,13 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
         if (wasSkipped) {
           console.log(chalk.yellow(`${name} was skipped (${wasSkipped.skipped!.reason})`));
         } else {
-          console.log(chalk.yellow(`${name} is not outdated or not installed.`));
+          // Distinguish "installed but up to date" from "not installed"
+          const listResult = await exec(["list", name]);
+          if (listResult.exitCode === 0) {
+            console.log(chalk.yellow(`${name} is already up to date.`));
+          } else {
+            console.log(chalk.yellow(`${name} is not installed.`));
+          }
         }
       }
     }
@@ -77,113 +116,126 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   }
 
   if (targets.length === 0) {
-    console.log("Everything is up to date (after filtering).");
+    if (skipped.length > 0) {
+      renderSkipped(skipped);
+    }
+    console.log("Nothing to upgrade.");
     return;
   }
 
-  // Step 3: Show what will be upgraded and confirm
-  const formulae = targets.filter((p) => p.type === "formula");
-  const casks = targets.filter((p) => p.type === "cask");
-
-  console.log(chalk.bold("\nThe following packages will be upgraded:\n"));
-
-  if (formulae.length > 0) {
-    console.log(chalk.bold(`  Formulae (${formulae.length}):`));
-    for (const f of formulae) {
-      console.log(
-        `    ${chalk.white(f.name)}  ${chalk.red(shortVersion(f.installedVersions[0] ?? ""))} ${chalk.dim("→")} ${chalk.green(shortVersion(f.currentVersion))}`
-      );
-    }
-    console.log("");
+  // Step 5: Detect running processes BEFORE showing preview
+  const s3 = spinner("Checking running processes...");
+  const preDetected = await detectRunningUpgrades(targets, (msg) => s3.update(msg));
+  const detectedMap = new Map(preDetected.map((d) => [d.packageName, d]));
+  if (preDetected.length === 0) {
+    s3.done("No running apps will be affected");
+  } else {
+    s3.done(`${preDetected.length} running app(s) will need restarting`);
   }
 
-  if (casks.length > 0) {
-    console.log(chalk.bold(`  Casks (${casks.length}):`));
-    for (const c of casks) {
-      console.log(
-        `    ${chalk.white(c.name)}  ${chalk.red(shortVersion(c.installedVersions[0] ?? ""))} ${chalk.dim("→")} ${chalk.green(shortVersion(c.currentVersion))}`
-      );
-    }
-    console.log("");
-  }
+  // Step 6: Show preview and confirm
+  console.log(chalk.bold(`\nThe following packages will be upgraded (${targets.length}):\n`));
+  console.log(renderPackageTable(targets, detectedMap));
 
   if (skipped.length > 0 && !options.only) {
-    console.log(chalk.dim(`  Skipped (${skipped.length}):`));
-    for (const s of skipped) {
-      console.log(chalk.dim(`    ${s.name}  (${s.skipped!.reason})`));
-    }
-    console.log("");
+    renderSkipped(skipped);
   }
 
-  console.log(
-    `${chalk.bold(String(targets.length))} package(s) to upgrade.`
-  );
+  renderSummary(targets.length, detectedMap.size, skipped.length);
 
   if (!options.yes) {
-    const proceed = await confirm("Proceed with upgrade?");
-    if (!proceed) {
+    const choice = await confirmUpgrade("Proceed with upgrade?");
+    if (choice === "no") {
       console.log("Aborted.");
       return;
     }
-  }
-
-  // Step 4: Upgrade
-  console.log(chalk.bold("\nUpgrading...\n"));
-  const upgradeExitCode = await brewUpgradeStreaming(options.only);
-
-  if (upgradeExitCode !== 0) {
-    log.error("brew upgrade failed");
-    process.exit(1);
-  }
-
-  console.log("");
-
-  // Step 5: Detect running processes
-  const s2 = spinner("Checking running processes...");
-  const detected = await detectRunningUpgrades(targets, (msg) => s2.update(msg));
-  if (detected.length === 0) {
-    s2.done("No running apps or processes were affected");
-  } else {
-    s2.done(`${detected.length} running app(s) need restarting`);
-  }
-
-  // Step 6: Report
-  console.log("");
-  const report = formatReport(
-    targets.length,
-    formulae.length,
-    casks.length,
-    detected
-  );
-  console.log(report);
-
-  if (detected.length === 0) return;
-
-  // Step 7: Restart
-  console.log("");
-
-  let restartAll = options.yes;
-
-  for (const app of detected) {
-    if (restartAll) {
-      process.stdout.write(`  ${chalk.cyan("⟳")} Restarting ${chalk.bold(app.displayName)}... `);
-      const ok = await restartApp(app);
-      console.log(ok ? chalk.green("done") : chalk.red("failed"));
-    } else {
-      const choice = await confirmRestart(app.displayName);
-
-      if (choice === "all") {
-        restartAll = true;
-        process.stdout.write(`  ${chalk.cyan("⟳")} Restarting ${chalk.bold(app.displayName)}... `);
-        const ok = await restartApp(app);
-        console.log(ok ? chalk.green("done") : chalk.red("failed"));
-      } else if (choice === "yes") {
-        process.stdout.write(`  ${chalk.cyan("⟳")} Restarting ${chalk.bold(app.displayName)}... `);
-        const ok = await restartApp(app);
-        console.log(ok ? chalk.green("done") : chalk.red("failed"));
-      } else {
-        console.log(chalk.dim(`  Skipped ${app.displayName}`));
+    if (choice === "select") {
+      targets = await selectPackages(targets, detectedMap);
+      if (targets.length === 0) {
+        console.log("No packages selected.");
+        return;
       }
+
+      console.log(chalk.bold(`\nSelected for upgrade (${targets.length}):\n`));
+      console.log(renderPackageTable(targets, detectedMap));
     }
   }
+
+  console.log("");
+
+  // Step 7: Upgrade packages one at a time, restarting affected apps immediately
+  console.log(chalk.bold("Upgrading...\n"));
+
+  let failCount = 0;
+  let restartedCount = 0;
+  let restartSkippedCount = 0;
+  let manualRestartCount = 0;
+  let restartAll = options.yes;
+
+  for (const pkg of targets) {
+    const typeIcon = pkg.type === "cask" ? "🍷" : "🍺";
+    console.log(
+      chalk.bold(`${typeIcon} ${pkg.name}`) +
+        chalk.dim(` ${pkg.installedVersions[0]} → ${pkg.currentVersion}`)
+    );
+
+    const exitCode = await brewUpgrade(pkg.name);
+    if (exitCode !== 0) {
+      failCount++;
+      console.log("");
+      continue;
+    }
+
+    // Restart immediately if this package had a running process
+    const app = detectedMap.get(pkg.name);
+    if (app) {
+      if (isManualRestartOnly(app)) {
+        const pids = app.pids.length > 0 ? ` (PID ${app.pids.join(", ")})` : "";
+        console.log(chalk.dim(`  ${app.displayName}${pids}: restart manually`));
+        manualRestartCount++;
+      } else {
+        if (restartAll) {
+          const ok = await doRestart(app);
+          if (ok) restartedCount++;
+        } else {
+          const choice = await confirmRestart(app.displayName);
+          if (choice === "all") {
+            restartAll = true;
+            const ok = await doRestart(app);
+            if (ok) restartedCount++;
+          } else if (choice === "yes") {
+            const ok = await doRestart(app);
+            if (ok) restartedCount++;
+          } else {
+            console.log(chalk.dim(`  Skipped ${app.displayName}`));
+            restartSkippedCount++;
+          }
+        }
+      }
+    }
+
+    console.log("");
+  }
+
+  // Summary
+  const parts: string[] = [];
+  parts.push(`${targets.length - failCount} upgraded`);
+  if (failCount > 0) parts.push(chalk.yellow(`${failCount} failed`));
+  if (restartedCount > 0) parts.push(chalk.cyan(`${restartedCount} restarted`));
+  if (restartSkippedCount > 0) parts.push(chalk.dim(`${restartSkippedCount} restart skipped`));
+  if (manualRestartCount > 0) {
+    parts.push(chalk.dim(`${manualRestartCount} manual restart required`));
+  }
+  console.log(parts.join(chalk.dim(" · ")));
+}
+
+function isManualRestartOnly(app: DetectedApp): boolean {
+  return app.kind === "cask-cli" || app.kind === "formula-cli";
+}
+
+async function doRestart(app: DetectedApp): Promise<boolean> {
+  process.stdout.write(`  ${chalk.cyan("⟳")} Restarting ${chalk.bold(app.displayName)}... `);
+  const ok = await restartApp(app);
+  console.log(ok ? chalk.green("done") : chalk.red("failed"));
+  return ok;
 }
