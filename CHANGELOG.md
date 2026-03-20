@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-03-20
+
+### Fixed
+
+- Release workflow: use single `macos-latest` runner with cross-compilation
+  instead of deprecated `macos-13` for x64 builds
+
 ## [0.1.0] - 2026-03-20
 
 Initial release. macOS Homebrew upgrade manager with targeted restart detection.

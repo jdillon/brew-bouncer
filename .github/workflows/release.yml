@@ -10,17 +10,7 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            target: bun-darwin-arm64
-            artifact: brew-bouncer-darwin-arm64
-          - os: macos-13
-            target: bun-darwin-x64
-            artifact: brew-bouncer-darwin-x64
-
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -33,19 +23,22 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Build native binary
+      - name: Build native binaries
         run: |
-          bun build --compile --target=${{ matrix.target }} src/index.ts \
-            --outfile dist/${{ matrix.artifact }}
+          bun build --compile --target=bun-darwin-arm64 src/index.ts \
+            --outfile dist/brew-bouncer-darwin-arm64
+          bun build --compile --target=bun-darwin-x64 src/index.ts \
+            --outfile dist/brew-bouncer-darwin-x64
 
       - name: Verify binary
-        if: matrix.target == 'bun-darwin-arm64'
-        run: dist/${{ matrix.artifact }} --version
+        run: dist/brew-bouncer-darwin-arm64 --version
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
+          name: brew-bouncer-binaries
+          path: |
+            dist/brew-bouncer-darwin-arm64
+            dist/brew-bouncer-darwin-x64
 
   release:
     needs: build
@@ -79,18 +72,12 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: brew-bouncer-binaries
           path: dist/
 
       - name: Prepare release assets
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           cd dist
-
-          # Flatten artifact directories
-          mv brew-bouncer-darwin-arm64/brew-bouncer-darwin-arm64 .
-          mv brew-bouncer-darwin-x64/brew-bouncer-darwin-x64 .
-          rmdir brew-bouncer-darwin-arm64 brew-bouncer-darwin-x64
-
           chmod +x brew-bouncer-darwin-*
 
           # Compute checksums
