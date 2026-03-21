@@ -161,13 +161,14 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     }
   }
 
-  // Step 7: Ask restart policy upfront (only when running apps detected)
+  // Step 7: Ask restart policy upfront (only when running apps detected in selected targets)
+  const affectedCount = targets.filter((p) => detectedMap.has(p.name)).length;
   let restartPolicy: RestartPolicy = "no";
-  if (detectedMap.size > 0) {
+  if (affectedCount > 0) {
     if (options.yes) {
       restartPolicy = "yes";
     } else {
-      restartPolicy = await confirmRestartPolicy(detectedMap.size);
+      restartPolicy = await confirmRestartPolicy(affectedCount);
     }
   }
 
