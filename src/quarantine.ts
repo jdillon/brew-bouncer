@@ -63,7 +63,7 @@ export async function removeQuarantine(path: string): Promise<boolean> {
   const exitCode = await proc.exited;
 
   if (exitCode !== 0) {
-    log.warn({ path, stderr }, "failed to remove quarantine");
+    log.warn("failed to remove quarantine: {path} {stderr}", { path, stderr });
   }
 
   return exitCode === 0;
@@ -103,12 +103,12 @@ export async function snapshotCaskQuarantine(
     // null = path doesn't exist (skip — don't treat as approved)
     // true = quarantined (skip — user never approved)
     if (result.quarantined === false) {
-      log.debug({ cask: result.caskName, appPath: result.appPath }, "previously approved (not quarantined)");
+      log.debug("previously approved (not quarantined): {cask} {appPath}", { cask: result.caskName, appPath: result.appPath });
       const existing = approved.get(result.caskName) ?? [];
       existing.push({ caskName: result.caskName, appPath: result.appPath });
       approved.set(result.caskName, existing);
     } else if (result.quarantined === null) {
-      log.debug({ cask: result.caskName, appPath: result.appPath }, "path not found, skipping");
+      log.debug("path not found, skipping: {cask} {appPath}", { cask: result.caskName, appPath: result.appPath });
     }
   }
 
