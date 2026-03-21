@@ -13,6 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { getLogger } from "@logtape/logtape";
+
+const log = getLogger(["brew-bouncer", "parser"]);
+
 export interface OutdatedPackage {
   name: string;
   installedVersions: string[];
@@ -94,13 +98,16 @@ export function filterOutdated(
 
   for (const pkg of packages) {
     if (ignoreSet.has(pkg.name.toLowerCase())) {
+      log.debug("Skipping {name}: ignored in config", { name: pkg.name });
       skipped.push({ ...pkg, skipped: { reason: "ignored in config" } });
     } else if (isUnversionedCask(pkg)) {
+      log.debug("Skipping {name}: unversioned (latest -> latest)", { name: pkg.name });
       skipped.push({
         ...pkg,
         skipped: { reason: "unversioned (latest → latest)" },
       });
     } else if (installerManualCasks?.has(pkg.name)) {
+      log.debug("Skipping {name}: installer manual", { name: pkg.name });
       skipped.push({
         ...pkg,
         skipped: { reason: "installer manual (upgrade manually)" },
@@ -110,6 +117,10 @@ export function filterOutdated(
     }
   }
 
+  log.debug("Filter result: {actionable} actionable, {skipped} skipped", {
+    actionable: actionable.length,
+    skipped: skipped.length,
+  });
   return { actionable, skipped };
 }
 
@@ -137,6 +148,9 @@ export function detectInstallerManualCasks(caskInfo: BrewCask[]): Set<string> {
         }
       }
     }
+  }
+  if (manual.size > 0) {
+    log.debug("Installer-manual casks: {casks}", { casks: [...manual].join(", ") });
   }
   return manual;
 }

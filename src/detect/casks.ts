@@ -13,6 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { getLogger } from "@logtape/logtape";
+
+const log = getLogger(["brew-bouncer", "detect", "casks"]);
+
 export interface RunningApp {
   name: string;
   bundleName: string;
@@ -32,6 +36,11 @@ export async function getRunningApps(): Promise<RunningApp[]> {
     getAppsFromProcessList(),
   ]);
 
+  log.debug("Running apps: {gui} from osascript, {ps} from ps", {
+    gui: guiApps.length,
+    ps: psApps.length,
+  });
+
   // Merge, deduplicating by bundleName (case-insensitive)
   const seen = new Set<string>();
   const merged: RunningApp[] = [];
@@ -44,6 +53,7 @@ export async function getRunningApps(): Promise<RunningApp[]> {
     }
   }
 
+  log.debug("Running apps after dedup: {count}", { count: merged.length });
   return merged;
 }
 
@@ -114,15 +124,25 @@ export function matchCaskToRunningApps(
 
   for (const artifact of appArtifacts) {
     const artifactBase = artifact.replace(/\.app$/, "").toLowerCase();
+    let found = false;
 
     for (const app of runningApps) {
       if (
         app.name.toLowerCase() === artifactBase ||
         app.bundleName.toLowerCase() === artifact.toLowerCase()
       ) {
+        log.debug("Cask artifact {artifact} matched running app {app}", {
+          artifact,
+          app: app.bundleName,
+        });
         matched.push(app);
+        found = true;
         break; // one match per artifact is enough
       }
+    }
+
+    if (!found) {
+      log.debug("Cask artifact {artifact} not running", { artifact });
     }
   }
 

@@ -13,35 +13,46 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import pino from "pino";
+import { configureSync, getConsoleSink, getLogger } from "@logtape/logtape";
+import { getPrettyFormatter } from "@logtape/pretty";
 
-export const log = pino({
-  level: "silent",
-  transport: {
-    target: "pino-pretty",
-    options: {
-      colorize: true,
-      ignore: "pid,hostname",
-      translateTime: "HH:MM:ss",
-    },
-  },
-});
+export const log = getLogger(["brew-bouncer"]);
 
 /**
  * Set log level from CLI flags.
  *   --debug   → "debug" (everything)
  *   --verbose → "info"  (info + warn + error)
  *   --quiet   → "error" (errors only, suppress warn)
- *   default   → "warn"  (warn + error)
+ *   default   → "warning"  (warn + error)
+ *
+ * Without calling this, LogTape loggers are no-ops (silent by default).
  */
 export function setLogLevel(flags: { debug?: boolean; verbose?: boolean; quiet?: boolean }): void {
+  // No flags = stay silent (LogTape loggers are no-ops without configure)
+  if (!flags.debug && !flags.verbose && !flags.quiet) return;
+
+  let lowestLevel: "debug" | "info" | "warning" | "error";
+
   if (flags.debug) {
-    log.level = "debug";
+    lowestLevel = "debug";
   } else if (flags.verbose) {
-    log.level = "info";
-  } else if (flags.quiet) {
-    log.level = "error";
+    lowestLevel = "info";
   } else {
-    log.level = "warn";
+    lowestLevel = "error";
   }
+
+  const formatter = getPrettyFormatter({
+    timestamp: "time",
+    icons: false,
+  });
+
+  configureSync({
+    sinks: {
+      console: getConsoleSink({ formatter }),
+    },
+    loggers: [
+      { category: ["brew-bouncer"], lowestLevel, sinks: ["console"] },
+      { category: ["logtape", "meta"], lowestLevel: "warning", sinks: ["console"] },
+    ],
+  });
 }

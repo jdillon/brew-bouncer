@@ -15,6 +15,9 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getLogger } from "@logtape/logtape";
+
+const log = getLogger(["brew-bouncer", "config"]);
 
 const CONFIG_DIR = join(homedir(), ".config", "brew-bouncer");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
@@ -32,11 +35,17 @@ export async function loadConfig(): Promise<BouncerConfig> {
     const file = Bun.file(CONFIG_FILE);
     if (await file.exists()) {
       const data = await file.json();
-      return { ...DEFAULT_CONFIG, ...data };
+      const config = { ...DEFAULT_CONFIG, ...data };
+      log.debug("Loaded config from {path} (ignore: {ignore})", {
+        path: CONFIG_FILE,
+        ignore: config.ignore.join(", ") || "none",
+      });
+      return config;
     }
   } catch {
-    // Config doesn't exist or is invalid — use defaults
+    log.debug("Config not found or invalid at {path}, using defaults", { path: CONFIG_FILE });
   }
+  log.debug("Using default config (no ignore list)");
   return DEFAULT_CONFIG;
 }
 
