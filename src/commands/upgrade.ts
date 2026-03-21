@@ -198,11 +198,13 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
 
     // Restart immediately if this package had a running process
     const app = detectedMap.get(pkg.name);
-    if (app && restartPolicy !== "no") {
+    if (app) {
       if (isManualRestartOnly(app)) {
         const pids = app.pids.length > 0 ? ` (PID ${app.pids.join(", ")})` : "";
         console.log(chalk.dim(`  ${app.displayName}${pids}: restart manually`));
         manualRestartCount++;
+      } else if (restartPolicy === "no") {
+        restartSkippedCount++;
       } else if (restartAll) {
         const ok = await doRestart(app);
         if (ok) restartedCount++;
