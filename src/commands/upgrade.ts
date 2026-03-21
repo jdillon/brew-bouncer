@@ -22,7 +22,7 @@ import {
 } from "../brew/parser.ts";
 import { detectRunningUpgrades, type DetectedApp } from "../detect/matcher.ts";
 import { restartApp } from "../restart.ts";
-import { confirmUpgrade, selectPackages, confirmRestart } from "../prompt.ts";
+import { confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart, type RestartPolicy } from "../prompt.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
 import { spinner } from "../spinner.ts";
@@ -161,16 +161,27 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     }
   }
 
+  // Step 7: Ask restart policy upfront (only when running apps detected in selected targets)
+  const affectedCount = targets.filter((p) => detectedMap.has(p.name)).length;
+  let restartPolicy: RestartPolicy = "no";
+  if (affectedCount > 0) {
+    if (options.yes) {
+      restartPolicy = "yes";
+    } else {
+      restartPolicy = await confirmRestartPolicy(affectedCount);
+    }
+  }
+
   console.log("");
 
-  // Step 7: Upgrade packages one at a time, restarting affected apps immediately
+  // Step 8: Upgrade packages one at a time, restarting affected apps immediately
   console.log(chalk.bold("Upgrading...\n"));
 
   let failCount = 0;
   let restartedCount = 0;
   let restartSkippedCount = 0;
   let manualRestartCount = 0;
-  let restartAll = options.yes;
+  let restartAll = restartPolicy === "yes";
 
   for (const pkg of targets) {
     const typeIcon = pkg.type === "cask" ? "🍷" : "🍺";
@@ -193,23 +204,24 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
         const pids = app.pids.length > 0 ? ` (PID ${app.pids.join(", ")})` : "";
         console.log(chalk.dim(`  ${app.displayName}${pids}: restart manually`));
         manualRestartCount++;
+      } else if (restartPolicy === "no") {
+        restartSkippedCount++;
+      } else if (restartAll) {
+        const ok = await doRestart(app);
+        if (ok) restartedCount++;
       } else {
-        if (restartAll) {
+        // restartPolicy === "ask"
+        const choice = await confirmRestart(app.displayName);
+        if (choice === "all") {
+          restartAll = true;
+          const ok = await doRestart(app);
+          if (ok) restartedCount++;
+        } else if (choice === "yes") {
           const ok = await doRestart(app);
           if (ok) restartedCount++;
         } else {
-          const choice = await confirmRestart(app.displayName);
-          if (choice === "all") {
-            restartAll = true;
-            const ok = await doRestart(app);
-            if (ok) restartedCount++;
-          } else if (choice === "yes") {
-            const ok = await doRestart(app);
-            if (ok) restartedCount++;
-          } else {
-            console.log(chalk.dim(`  Skipped ${app.displayName}`));
-            restartSkippedCount++;
-          }
+          console.log(chalk.dim(`  Skipped ${app.displayName}`));
+          restartSkippedCount++;
         }
       }
     }
