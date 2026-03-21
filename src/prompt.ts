@@ -99,6 +99,32 @@ export async function selectPackages(
 
 export type PolicyChoice = "yes" | "ask" | "no";
 
+export type RestartPolicy = PolicyChoice;
+
+/**
+ * Prompt for restart policy before upgrades begin.
+ * yes = auto-restart all, ask = prompt per app, no = skip all restarts.
+ */
+export async function confirmRestartPolicy(affectedCount: number): Promise<RestartPolicy> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await rl.question(
+      `Restart ${affectedCount} affected app(s) after upgrade? [${chalk.dim("y")}es / as${chalk.cyan("k")} each / ${chalk.bold("N")}o] `
+    );
+    const trimmed = answer.trim().toLowerCase();
+
+    if (trimmed === "y" || trimmed === "yes") return "yes";
+    if (trimmed === "k" || trimmed === "ask") return "ask";
+    return "no";
+  } finally {
+    rl.close();
+  }
+}
+
 /**
  * Prompt for quarantine policy before upgrades begin.
  * yes = auto-remove quarantine from all previously-approved apps,
