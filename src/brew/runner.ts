@@ -13,6 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { getLogger } from "@logtape/logtape";
+
+const log = getLogger(["brew-bouncer", "brew"]);
+
 export interface ExecResult {
   stdout: string;
   stderr: string;
@@ -22,6 +26,8 @@ export interface ExecResult {
 const BREW_PATH = "/opt/homebrew/bin/brew";
 
 export async function exec(args: string[]): Promise<ExecResult> {
+  log.debug("exec: brew {args}", { args: args.join(" ") });
+
   const proc = Bun.spawn([BREW_PATH, ...args], {
     stdout: "pipe",
     stderr: "pipe",
@@ -34,6 +40,19 @@ export async function exec(args: string[]): Promise<ExecResult> {
 
   const exitCode = await proc.exited;
 
+  if (exitCode !== 0) {
+    log.debug("exec: brew {args} failed (exit {exitCode}): {stderr}", {
+      args: args.join(" "),
+      exitCode,
+      stderr: stderr.trim(),
+    });
+  } else {
+    log.debug("exec: brew {args} ok ({bytes} bytes)", {
+      args: args.join(" "),
+      bytes: stdout.length,
+    });
+  }
+
   return { stdout, stderr, exitCode };
 }
 
@@ -42,12 +61,19 @@ export async function exec(args: string[]): Promise<ExecResult> {
  * Use for --verbose passthrough where the user wants to see everything.
  */
 export async function execStreaming(args: string[]): Promise<number> {
+  log.debug("execStreaming: brew {args}", { args: args.join(" ") });
+
   const proc = Bun.spawn([BREW_PATH, ...args], {
     stdout: "inherit",
     stderr: "inherit",
   });
 
-  return proc.exited;
+  const exitCode = await proc.exited;
+  log.debug("execStreaming: brew {args} exit {exitCode}", {
+    args: args.join(" "),
+    exitCode,
+  });
+  return exitCode;
 }
 
 export async function brewUpdate(): Promise<ExecResult> {
@@ -84,6 +110,8 @@ export async function brewServicesList(): Promise<ExecResult> {
  * Returns top-level .app bundle names found in the receipt.
  */
 export async function pkgutilAppNames(pkgId: string): Promise<string[]> {
+  log.debug("pkgutil --files {pkgId}", { pkgId });
+
   const proc = Bun.spawn(["pkgutil", "--files", pkgId], {
     stdout: "pipe",
     stderr: "pipe",
@@ -92,7 +120,10 @@ export async function pkgutilAppNames(pkgId: string): Promise<string[]> {
   const stdout = await new Response(proc.stdout).text();
   const exitCode = await proc.exited;
 
-  if (exitCode !== 0) return [];
+  if (exitCode !== 0) {
+    log.debug("pkgutil {pkgId} failed (exit {exitCode})", { pkgId, exitCode });
+    return [];
+  }
 
   // Find top-level .app entries (e.g., "zoom.us.app" not nested ones)
   const apps: string[] = [];
@@ -102,5 +133,6 @@ export async function pkgutilAppNames(pkgId: string): Promise<string[]> {
     }
   }
 
+  log.debug("pkgutil {pkgId}: found {apps}", { pkgId, apps: apps.join(", ") || "none" });
   return apps;
 }

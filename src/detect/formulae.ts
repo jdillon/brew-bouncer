@@ -13,6 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { getLogger } from "@logtape/logtape";
+
+const log = getLogger(["brew-bouncer", "detect", "formulae"]);
+
 export interface RunningProcess {
   pid: number;
   name: string;
@@ -29,6 +33,7 @@ export async function getRunningProcesses(): Promise<RunningProcess[]> {
   await proc.exited;
 
   const lines = stdout.trim().split("\n").slice(1); // skip header
+  log.debug("Running processes: {count}", { count: lines.length });
   return lines
     .map((line) => {
       const trimmed = line.trim();
@@ -62,11 +67,17 @@ export function matchFormulaToRunningProcesses(
   const seen = new Set<number>();
 
   for (const binary of binaries) {
+    let found = false;
     for (const proc of processes) {
       if (proc.name === binary && !seen.has(proc.pid)) {
+        log.debug("Binary {binary} matched PID {pid}", { binary, pid: proc.pid });
         matched.push(proc);
         seen.add(proc.pid);
+        found = true;
       }
+    }
+    if (!found) {
+      log.debug("Binary {binary} not running", { binary });
     }
   }
 
@@ -85,5 +96,8 @@ export function matchFormulaToRunningServices(
   const match = services.find(
     (s) => s.name === formulaName && s.status === "started"
   );
+  if (match) {
+    log.debug("Formula {name} matched running service", { name: formulaName });
+  }
   return match ? { name: match.name, status: match.status } : null;
 }

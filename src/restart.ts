@@ -33,7 +33,7 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   const appName = app.displayName.replace(/\.app$/, "");
 
   // Quit the app gracefully
-  log.debug({ app: appName }, "Quitting app");
+  log.debug("Quitting app: {app}", { app: appName });
   const quit = Bun.spawn(
     ["osascript", "-e", `tell application "${appName}" to quit`],
     { stdout: "pipe", stderr: "pipe" }
@@ -44,7 +44,7 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   await Bun.sleep(1500);
 
   // Reopen it
-  log.debug({ app: appName }, "Reopening app");
+  log.debug("Reopening app: {app}", { app: appName });
   const open = Bun.spawn(["open", "-a", appName], {
     stdout: "pipe",
     stderr: "pipe",
@@ -53,7 +53,7 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
 
   if (exitCode !== 0) {
     const stderr = await new Response(open.stderr).text();
-    log.error({ app: appName, stderr }, "Failed to reopen app");
+    log.error("Failed to reopen app: {app} {stderr}", { app: appName, stderr });
     return false;
   }
 
@@ -61,14 +61,14 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
 }
 
 async function restartService(app: DetectedApp): Promise<boolean> {
-  log.debug({ service: app.packageName }, "Restarting brew service");
+  log.debug("Restarting brew service: {service}", { service: app.packageName });
   const result = await exec(["services", "restart", app.packageName]);
 
   if (result.exitCode !== 0) {
-    log.error(
-      { service: app.packageName, stderr: result.stderr },
-      "Failed to restart service"
-    );
+    log.error("Failed to restart service: {service} {stderr}", {
+      service: app.packageName,
+      stderr: result.stderr,
+    });
     return false;
   }
 
