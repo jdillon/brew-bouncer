@@ -44,7 +44,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   const updateResult = await brewUpdate();
   if (updateResult.exitCode !== 0) {
     s1.fail("brew update failed");
-    log.error({ stderr: updateResult.stderr }, "brew update failed");
+    log.error("brew update failed: {stderr}", { stderr: updateResult.stderr });
     process.exit(1);
   }
   s1.done("Homebrew updated");

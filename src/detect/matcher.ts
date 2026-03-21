@@ -38,6 +38,9 @@ import {
   matchFormulaToRunningServices,
 } from "./formulae.ts";
 import { pool } from "../pool.ts";
+import { getLogger } from "@logtape/logtape";
+
+const log = getLogger(["brew-bouncer", "detect"]);
 
 export interface DetectedApp {
   packageName: string;
@@ -73,6 +76,12 @@ export async function detectRunningUpgrades(
 
   const services = parseBrewServices(servicesResult.stdout);
 
+  log.debug("System state: {apps} running apps, {procs} processes, {svcs} services", {
+    apps: runningApps.length,
+    procs: runningProcesses.length,
+    svcs: services.filter((s) => s.status === "started").length,
+  });
+
   // Process casks
   if (caskInfoResult && caskInfoResult.exitCode === 0) {
     onProgress?.("matching casks to running apps");
@@ -82,7 +91,13 @@ export async function detectRunningUpgrades(
       const pkg = casks.find((c) => c.name === cask.token);
       if (!pkg) continue;
 
+      log.debug("Checking cask {name}", { name: cask.token });
       let appNames = extractCaskAppNames(cask);
+
+      log.debug("Cask {name} app artifacts: {apps}", {
+        name: cask.token,
+        apps: appNames.join(", ") || "none",
+      });
 
       // Fallback: for pkg-installed casks, resolve app names from receipts
       if (appNames.length === 0) {
@@ -110,6 +125,12 @@ export async function detectRunningUpgrades(
       // Fallback: check binary artifacts against running processes
       // Casks like claude-code install CLI binaries, not .app bundles
       const binaryNames = extractCaskBinaryNames(cask);
+      if (binaryNames.length > 0) {
+        log.debug("Cask {name} binary artifacts: {bins}", {
+          name: cask.token,
+          bins: binaryNames.join(", "),
+        });
+      }
       if (binaryNames.length > 0) {
         const binMatched = matchFormulaToRunningProcesses(
           binaryNames,
@@ -185,6 +206,15 @@ export async function detectRunningUpgrades(
     for (const result of formulaResults) {
       if (result) detected.push(result);
     }
+  }
+
+  log.debug("Detection complete: {count} affected packages", { count: detected.length });
+  for (const d of detected) {
+    log.debug("  {kind} {name} ({display})", {
+      kind: d.kind,
+      name: d.packageName,
+      display: d.displayName,
+    });
   }
 
   return detected;
