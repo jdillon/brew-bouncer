@@ -21,11 +21,9 @@ export const log = getLogger(["brew-bouncer"]);
 /**
  * Set log level from CLI flags.
  *   --debug   → "debug" (everything)
- *   --verbose → "info"  (info + warn + error)
- *   --quiet   → "error" (errors only, suppress warn)
- *   default   → "warning"  (warn + error)
- *
- * Without calling this, LogTape loggers are no-ops (silent by default).
+ *   --verbose → "info"  (info + warning + error)
+ *   --quiet   → "error" (errors only)
+ *   no flags  → silent  (loggers remain no-ops)
  */
 export function setLogLevel(flags: { debug?: boolean; verbose?: boolean; quiet?: boolean }): void {
   // No flags = stay silent (LogTape loggers are no-ops without configure)
