@@ -22,7 +22,7 @@ import {
 } from "../brew/parser.ts";
 import { detectRunningUpgrades, type DetectedApp } from "../detect/matcher.ts";
 import { restartApp } from "../restart.ts";
-import { confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart, confirmQuarantinePolicy, type PolicyChoice, type RestartPolicy } from "../prompt.ts";
+import { confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart, confirmQuarantinePolicy, confirmUnquarantine, type PolicyChoice, type RestartPolicy } from "../prompt.ts";
 import { snapshotCaskQuarantine, removeQuarantine, type QuarantineInfo } from "../quarantine.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
@@ -137,7 +137,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
 
   // Step 5b: Snapshot quarantine status for cask targets
   const caskTargets = targets.filter((p) => p.type === "cask");
-  let approvedApps = new Map<string, QuarantineInfo>();
+  let approvedApps = new Map<string, QuarantineInfo[]>();
 
   if (caskTargets.length > 0 && caskInfoParsed) {
     const s4 = spinner("Checking quarantine status...");
@@ -145,10 +145,11 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
       caskTargets.map((c) => c.name),
       caskInfoParsed.casks
     );
-    if (approvedApps.size === 0) {
+    const approvedCount = [...approvedApps.values()].reduce((n, apps) => n + apps.length, 0);
+    if (approvedCount === 0) {
       s4.done("No previously-approved apps to unquarantine");
     } else {
-      s4.done(`${approvedApps.size} previously-approved app(s) will be re-quarantined`);
+      s4.done(`${approvedCount} previously-approved app(s) can be unquarantined`);
     }
   }
 
@@ -193,12 +194,15 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
 
   // Step 7b: Ask quarantine policy (only when previously-approved apps in final target list)
   const approvedInTargets = targets.filter((p) => approvedApps.has(p.name));
+  const approvedAppCount = approvedInTargets.reduce(
+    (n, p) => n + (approvedApps.get(p.name)?.length ?? 0), 0
+  );
   let quarantinePolicy: PolicyChoice = "no";
-  if (approvedInTargets.length > 0) {
+  if (approvedAppCount > 0) {
     if (options.yes) {
       quarantinePolicy = "yes";
     } else {
-      quarantinePolicy = await confirmQuarantinePolicy(approvedInTargets.length);
+      quarantinePolicy = await confirmQuarantinePolicy(approvedAppCount);
     }
   }
 
@@ -229,17 +233,19 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     }
 
     // Remove quarantine if this cask was previously approved
-    const approved = approvedApps.get(pkg.name);
-    if (approved && quarantinePolicy !== "no") {
-      if (quarantinePolicy === "yes") {
-        const ok = await doUnquarantine(approved);
-        if (ok) unquarantinedCount++;
-      } else {
-        // quarantinePolicy === "ask"
-        const choice = await confirmUnquarantine(approved.appPath);
-        if (choice) {
+    const approvedList = approvedApps.get(pkg.name);
+    if (approvedList && quarantinePolicy !== "no") {
+      for (const approved of approvedList) {
+        if (quarantinePolicy === "yes") {
           const ok = await doUnquarantine(approved);
           if (ok) unquarantinedCount++;
+        } else {
+          // quarantinePolicy === "ask"
+          const choice = await confirmUnquarantine(approved.appPath);
+          if (choice) {
+            const ok = await doUnquarantine(approved);
+            if (ok) unquarantinedCount++;
+          }
         }
       }
     }
@@ -307,20 +313,3 @@ async function doUnquarantine(info: QuarantineInfo): Promise<boolean> {
   return ok;
 }
 
-async function confirmUnquarantine(appPath: string): Promise<boolean> {
-  const readline = await import("node:readline/promises");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    const answer = await rl.question(
-      `  Remove quarantine from ${appPath}? [${chalk.bold("Y")}/${chalk.dim("n")}] `
-    );
-    const trimmed = answer.trim().toLowerCase();
-    return trimmed !== "n" && trimmed !== "no";
-  } finally {
-    rl.close();
-  }
-}

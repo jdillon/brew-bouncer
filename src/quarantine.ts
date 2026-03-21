@@ -24,18 +24,27 @@ export interface QuarantineInfo {
 
 /**
  * Check if a file/bundle has the com.apple.quarantine extended attribute.
+ * Returns true if quarantined, false if attribute is absent, null if path doesn't exist.
  */
-async function isQuarantined(path: string): Promise<boolean> {
+async function isQuarantined(path: string): Promise<boolean | null> {
   const proc = Bun.spawn(["xattr", "-p", "com.apple.quarantine", path], {
     stdout: "pipe",
     stderr: "pipe",
   });
 
-  await new Response(proc.stdout).text();
+  const [, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
   const exitCode = await proc.exited;
 
-  // exit 0 = attribute exists (quarantined), non-zero = no attribute
-  return exitCode === 0;
+  if (exitCode === 0) return true;
+
+  // "No such file" = path doesn't exist, can't determine status
+  if (stderr.includes("No such file")) return null;
+
+  // "No such xattr" = attribute absent (previously approved)
+  return false;
 }
 
 /**
@@ -69,8 +78,8 @@ export async function removeQuarantine(path: string): Promise<boolean> {
 export async function snapshotCaskQuarantine(
   caskNames: string[],
   caskInfo: BrewCask[]
-): Promise<Map<string, QuarantineInfo>> {
-  const approved = new Map<string, QuarantineInfo>();
+): Promise<Map<string, QuarantineInfo[]>> {
+  const approved = new Map<string, QuarantineInfo[]>();
 
   const checks = caskInfo
     .filter((cask) => caskNames.includes(cask.token))
@@ -90,12 +99,16 @@ export async function snapshotCaskQuarantine(
   );
 
   for (const result of results) {
-    if (!result.quarantined) {
+    // false = attribute absent (previously approved)
+    // null = path doesn't exist (skip — don't treat as approved)
+    // true = quarantined (skip — user never approved)
+    if (result.quarantined === false) {
       log.debug({ cask: result.caskName, appPath: result.appPath }, "previously approved (not quarantined)");
-      approved.set(result.caskName, {
-        caskName: result.caskName,
-        appPath: result.appPath,
-      });
+      const existing = approved.get(result.caskName) ?? [];
+      existing.push({ caskName: result.caskName, appPath: result.appPath });
+      approved.set(result.caskName, existing);
+    } else if (result.quarantined === null) {
+      log.debug({ cask: result.caskName, appPath: result.appPath }, "path not found, skipping");
     }
   }
 

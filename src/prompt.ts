@@ -150,6 +150,27 @@ export async function confirmQuarantinePolicy(approvedCount: number): Promise<Po
   }
 }
 
+/**
+ * Prompt to confirm removing quarantine from a specific app.
+ * Y = remove (default), n = skip.
+ */
+export async function confirmUnquarantine(appPath: string): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await rl.question(
+      `  Remove quarantine from ${appPath}? [${chalk.bold("Y")}/${chalk.dim("n")}] `
+    );
+    const trimmed = answer.trim().toLowerCase();
+    return trimmed !== "n" && trimmed !== "no";
+  } finally {
+    rl.close();
+  }
+}
+
 export type RestartChoice = "yes" | "no" | "all";
 
 /**
