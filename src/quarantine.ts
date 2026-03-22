@@ -40,11 +40,15 @@ async function isQuarantined(path: string): Promise<boolean | null> {
 
   if (exitCode === 0) return true;
 
-  // "No such file" = path doesn't exist, can't determine status
-  if (stderr.includes("No such file")) return null;
-
   // "No such xattr" = attribute absent (previously approved)
-  return false;
+  if (stderr.includes("No such xattr")) return false;
+
+  // "No such file" = path doesn't exist, or any other error (permission denied, etc.)
+  // Treat as indeterminate — don't falsely mark as approved
+  if (!stderr.includes("No such file")) {
+    log.warn("unexpected xattr error for {path}: {stderr}", { path, stderr: stderr.trim() });
+  }
+  return null;
 }
 
 /**
