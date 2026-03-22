@@ -42,3 +42,7 @@ src/build-info.ts
 
 # agent context
 .agent/
+
+tmp/
+CLAUDE.local.md
+AGENTS.local.md
