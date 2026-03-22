@@ -40,12 +40,17 @@ export function spinner(title: string): Spinner {
   // In debug/verbose mode, skip animated spinners to avoid garbling log output
   if (verboseLogging) {
     process.stderr.write(`${chalk.cyan("⠋")} ${title}\n`);
+    let stopped = false;
     return {
       update() {},
       done(message?: string) {
+        if (stopped) return;
+        stopped = true;
         process.stderr.write(`${chalk.green("✓")} ${message ?? title.replace(/\.{3}$/, "")}\n`);
       },
       fail(message?: string) {
+        if (stopped) return;
+        stopped = true;
         process.stderr.write(`${chalk.red("✗")} ${message ?? title.replace(/\.{3}$/, " failed")}\n`);
       },
     };
