@@ -37,5 +37,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # beads (stealth mode)
 .beads/
 
+# generated build metadata (force-added during releases)
+src/build-info.ts
+
 # agent context
 .agent/

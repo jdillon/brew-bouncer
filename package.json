@@ -9,7 +9,8 @@
   },
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build": "bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile dist/brew-bouncer",
+    "build:info": "bun run scripts/stamp-build-info.ts",
+    "build": "bun run build:info && bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile dist/brew-bouncer",
     "build:verify": "bun run build && ./dist/brew-bouncer --version && ./dist/brew-bouncer --help",
     "typecheck": "tsc --noEmit",
     "license:check": "license-check-and-add check -f license-checker.config.json",

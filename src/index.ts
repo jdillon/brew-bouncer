@@ -19,13 +19,12 @@ import { program } from "commander";
 import { upgrade } from "./commands/upgrade.ts";
 import { status } from "./commands/status.ts";
 import { setLogLevel } from "./logger.ts";
-
-import pkg from "../package.json";
+import { getVersion } from "./version.ts";
 
 program
   .name("brew bouncer")
   .description("Homebrew upgrade manager — update, upgrade, and restart what needs it")
-  .version(pkg.version)
+  .version(getVersion())
   .option("--debug", "Debug log output")
   .option("--verbose", "Info-level log output")
   .option("--quiet", "Errors only")
