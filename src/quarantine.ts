@@ -13,9 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { getLogger } from "@logtape/logtape";
 import type { BrewCask } from "./brew/parser.ts";
 import { extractCaskAppNames } from "./brew/parser.ts";
-import { log } from "./logger.ts";
+
+const log = getLogger(["brew-bouncer", "quarantine"]);
 
 export interface QuarantineInfo {
   caskName: string;
@@ -38,10 +40,16 @@ async function isQuarantined(path: string): Promise<boolean | null> {
   ]);
   const exitCode = await proc.exited;
 
-  if (exitCode === 0) return true;
+  if (exitCode === 0) {
+    log.debug("quarantined: {path}", { path });
+    return true;
+  }
 
   // "No such xattr" = attribute absent (previously approved)
-  if (stderr.includes("No such xattr")) return false;
+  if (stderr.includes("No such xattr")) {
+    log.debug("not quarantined (approved): {path}", { path });
+    return false;
+  }
 
   // "No such file" = path doesn't exist, or any other error (permission denied, etc.)
   // Treat as indeterminate — don't falsely mark as approved
@@ -67,10 +75,12 @@ export async function removeQuarantine(path: string): Promise<boolean> {
   const exitCode = await proc.exited;
 
   if (exitCode !== 0) {
-    log.warn("failed to remove quarantine: {path} {stderr}", { path, stderr });
+    log.warn("failed to remove quarantine: {path} {stderr}", { path, stderr: stderr.trim() });
+    return false;
   }
 
-  return exitCode === 0;
+  log.debug("removed quarantine: {path}", { path });
+  return true;
 }
 
 /**
@@ -95,6 +105,8 @@ export async function snapshotCaskQuarantine(
       }));
     });
 
+  log.debug("checking quarantine status for {count} app(s)", { count: checks.length });
+
   const results = await Promise.all(
     checks.map(async (check) => {
       const quarantined = await isQuarantined(check.appPath);
@@ -115,6 +127,12 @@ export async function snapshotCaskQuarantine(
       log.debug("path not found, skipping: {cask} {appPath}", { cask: result.caskName, appPath: result.appPath });
     }
   }
+
+  const totalApproved = [...approved.values()].reduce((n, apps) => n + apps.length, 0);
+  log.debug("quarantine snapshot: {approved} approved, {skipped} skipped/quarantined", {
+    approved: totalApproved,
+    skipped: results.length - totalApproved,
+  });
 
   return approved;
 }
