@@ -18,6 +18,9 @@ import { getPrettyFormatter } from "@logtape/pretty";
 
 export const log = getLogger(["brew-bouncer"]);
 
+/** True when --debug or --verbose is active (spinners should be suppressed). */
+export let verboseLogging = false;
+
 /**
  * Set log level from CLI flags.
  *   --debug   → "debug" (everything)
@@ -26,6 +29,7 @@ export const log = getLogger(["brew-bouncer"]);
  *   no flags  → silent  (loggers remain no-ops)
  */
 export function setLogLevel(flags: { debug?: boolean; verbose?: boolean; quiet?: boolean }): void {
+  verboseLogging = !!(flags.debug || flags.verbose);
   // No flags = stay silent (LogTape loggers are no-ops without configure)
   if (!flags.debug && !flags.verbose && !flags.quiet) return;
 
