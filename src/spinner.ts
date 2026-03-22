@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import chalk from "chalk";
+import { verboseLogging } from "./logger.js";
 
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -36,6 +37,25 @@ export interface Spinner {
  *   ✓ 12 packages checked, 6 need restart
  */
 export function spinner(title: string): Spinner {
+  // In debug/verbose mode, skip animated spinners to avoid garbling log output
+  if (verboseLogging) {
+    process.stderr.write(`${chalk.cyan("⠋")} ${title}\n`);
+    let stopped = false;
+    return {
+      update() {},
+      done(message?: string) {
+        if (stopped) return;
+        stopped = true;
+        process.stderr.write(`${chalk.green("✓")} ${message ?? title.replace(/\.{3}$/, "")}\n`);
+      },
+      fail(message?: string) {
+        if (stopped) return;
+        stopped = true;
+        process.stderr.write(`${chalk.red("✗")} ${message ?? title.replace(/\.{3}$/, " failed")}\n`);
+      },
+    };
+  }
+
   let frame = 0;
   let detail = "";
   let stopped = false;
