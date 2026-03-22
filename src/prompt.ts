@@ -97,7 +97,9 @@ export async function selectPackages(
   return packages.filter((p) => selectedSet.has(p.name));
 }
 
-export type RestartPolicy = "yes" | "ask" | "no";
+export type PolicyChoice = "yes" | "ask" | "no";
+
+export type RestartPolicy = PolicyChoice;
 
 /**
  * Prompt for restart policy before upgrades begin.
@@ -118,6 +120,52 @@ export async function confirmRestartPolicy(affectedCount: number): Promise<Resta
     if (trimmed === "y" || trimmed === "yes") return "yes";
     if (trimmed === "k" || trimmed === "ask") return "ask";
     return "no";
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Prompt for quarantine policy before upgrades begin.
+ * yes = auto-remove quarantine from all previously-approved apps,
+ * ask = prompt per app, no = don't touch quarantine.
+ */
+export async function confirmQuarantinePolicy(approvedCount: number): Promise<PolicyChoice> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await rl.question(
+      `Remove quarantine from ${approvedCount} previously-approved app(s) after upgrade? [${chalk.dim("y")}es / ${chalk.bold("N")}o / as${chalk.cyan("k")}] `
+    );
+    const trimmed = answer.trim().toLowerCase();
+
+    if (trimmed === "y" || trimmed === "yes") return "yes";
+    if (trimmed === "k" || trimmed === "ask") return "ask";
+    return "no";
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Prompt to confirm removing quarantine from a specific app.
+ * Y = remove (default), n = skip.
+ */
+export async function confirmUnquarantine(appPath: string): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await rl.question(
+      `  Remove quarantine from ${appPath}? [${chalk.bold("Y")}/${chalk.dim("n")}] `
+    );
+    const trimmed = answer.trim().toLowerCase();
+    return trimmed !== "n" && trimmed !== "no";
   } finally {
     rl.close();
   }

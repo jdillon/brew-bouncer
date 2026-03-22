@@ -22,7 +22,7 @@ No test suite yet. No lint setup.
 - **Runtime**: Bun (not Node.js) — use `bun run` / `bun test` / `bun install`
 - **Language**: TypeScript strict mode (ESNext target, bundler module resolution)
 - **CLI**: commander (arg parsing), chalk (colors), cli-table3 (tables), @inquirer/prompts (checkbox selector)
-- **Logging**: pino + pino-pretty, silent by default, controlled by `--debug`/`--verbose`/`--quiet`
+- **Logging**: @logtape/logtape + @logtape/pretty, silent by default, controlled by `--debug`/`--verbose`/`--quiet`
 
 ## Architecture
 
