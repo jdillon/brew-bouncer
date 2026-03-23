@@ -2,7 +2,7 @@
   "src": [
     "src/**/*.ts"
   ],
-  "path": "license-header.txt",
+  "path": ".license-header.txt",
   "ignore": [
     ".DS_Store",
     ".gitignore",
@@ -27,7 +27,7 @@
     ".github/formula-template.rb",
     "**/*.bun-build"
   ],
-  "license": "license-header.txt",
+  "license": ".license-header.txt",
   "default_format": {
     "prepend": "/*",
     "append": " */",
