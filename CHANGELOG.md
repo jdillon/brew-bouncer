@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Quarantine management for cask upgrades: preserve user's unquarantine approvals
+  across upgrades with configurable policy (yes/ask/no)
+- Dev/release version identification via build stamping (dev builds show
+  e.g. 0.1.1-dev+branch.abc1234)
+- Restart policy prompt: ask upfront whether to auto-restart, ask per-app, or
+  skip all restarts
+
+### Changed
+
+- Disable spinners when --debug or --verbose is enabled (prevents garbled log
+  output)
+
+### Fixed
+
+- Compiled binary crash: migrate logging from pino to LogTape (pino's worker
+  threads fail in standalone binaries)
+
 ## [0.1.1] - 2026-03-20
 
 ### Fixed
