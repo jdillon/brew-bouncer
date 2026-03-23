@@ -20,6 +20,9 @@ jobs:
 
       - run: bun install
 
+      - name: Stamp build info
+        run: bun run build:info -- --release
+
       - name: Typecheck
         run: bun run typecheck
 

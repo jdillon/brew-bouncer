@@ -22,7 +22,8 @@
     "**/*.yml",
     "**/*.yaml",
     "**/*.toml",
-    "**/*.lock"
+    "**/*.lock",
+    "src/build-info.ts"
   ],
   "license": "license-header.txt",
   "default_format": {

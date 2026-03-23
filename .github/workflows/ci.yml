@@ -20,6 +20,9 @@ jobs:
       - name: License headers
         run: bun run license:check
 
+      - name: Stamp build info
+        run: bun run build:info
+
       - name: Typecheck
         run: bun run typecheck
 
