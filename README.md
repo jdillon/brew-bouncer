@@ -1,15 +1,59 @@
 # brew-bouncer
 
-To install dependencies:
+Homebrew upgrade manager for macOS. Updates and upgrades your packages, detects
+which running apps were affected, and walks you through restarting them.
+Replaces the common post-upgrade reboot with targeted restarts.
+
+![Upgrade preview](docs/upgrade-preview.png)
+
+## Features
+
+- **Upgrade preview** — shows what will be upgraded with version diffs, which
+  apps are running, and which were skipped
+- **Interactive selection** — confirm all, pick individual packages, or select
+  with a checkbox UI
+- **Restart detection** — finds running apps affected by upgrades using
+  osascript, `ps`, `pkgutil`, and `brew services`
+- **Targeted restarts** — quit and reopen GUI apps, restart brew services, or
+  show manual instructions for CLI tools
+- **Quarantine management** — preserves macOS quarantine approvals across
+  upgrades so you don't re-approve trusted apps
+- **Restart policy** — choose upfront: auto-restart all, ask per-app, or skip
+
+## Install
+
+```bash
+brew tap jdillon/planet57
+brew install brew-bouncer
+```
+
+## Usage
+
+```bash
+# Show outdated packages and what's running
+brew bouncer status
+
+# Upgrade everything with interactive prompts
+brew bouncer upgrade
+
+# Upgrade specific packages
+brew bouncer upgrade firefox slack
+
+# Skip all confirmations
+brew bouncer upgrade --yes
+```
+
+## Building from source
+
+Requires [Bun](https://bun.sh).
 
 ```bash
 bun install
+bun run typecheck
+bun run build          # native binary at dist/brew-bouncer
+bun run dev            # run from source
 ```
 
-To run:
+## License
 
-```bash
-bun run index.ts
-```
-
-This project was created using `bun init` in bun v1.3.8. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+Apache 2.0

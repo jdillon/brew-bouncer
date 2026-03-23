@@ -2,7 +2,7 @@
 description: Prepare and tag a new release
 argument-hint: [version]
 allowed-tools: Bash(git:*), Bash(jq:*), Read, Edit, AskUserQuestion
-model: sonnet
+#model: sonnet
 ---
 
 Prepare a release for brew-bouncer.
