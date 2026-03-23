@@ -23,7 +23,9 @@
     "**/*.yaml",
     "**/*.toml",
     "**/*.lock",
-    "src/build-info.ts"
+    "src/build-info.ts",
+    ".github/formula-template.rb",
+    "**/*.bun-build"
   ],
   "license": "license-header.txt",
   "default_format": {
