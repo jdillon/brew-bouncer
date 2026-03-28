@@ -106,10 +106,10 @@ No auto-migration. Reasons:
 - Writing to the user's filesystem without being asked is rude
 - Users who never see the warning (no upgrades pending) don't need to migrate
 
-If both files exist, `config.yaml` wins. No merge. Log a warning:
+If both files exist, abort with an error. Ambiguity is a config problem the user should resolve:
 
 ```
-warning: both config.yaml and config.json exist, using config.yaml
+error: Ambiguous config: both ~/.config/brew-bouncer/config.yaml and ~/.config/brew-bouncer/config.json exist. Remove one.
 ```
 
 ### Timeline
