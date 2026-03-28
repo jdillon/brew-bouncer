@@ -16,11 +16,13 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getLogger } from "@logtape/logtape";
+import { parse } from "yaml";
 
 const log = getLogger(["brew-bouncer", "config"]);
 
 const CONFIG_DIR = join(homedir(), ".config", "brew-bouncer");
-const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+const CONFIG_YAML = join(CONFIG_DIR, "config.yaml");
+const CONFIG_JSON = join(CONFIG_DIR, "config.json");
 
 export interface BouncerConfig {
   ignore: string[];
@@ -31,24 +33,49 @@ const DEFAULT_CONFIG: BouncerConfig = {
 };
 
 export async function loadConfig(): Promise<BouncerConfig> {
-  try {
-    const file = Bun.file(CONFIG_FILE);
-    if (await file.exists()) {
-      const data = await file.json();
+  const yamlExists = await Bun.file(CONFIG_YAML).exists();
+  const jsonExists = await Bun.file(CONFIG_JSON).exists();
+
+  if (yamlExists && jsonExists) {
+    throw new Error(
+      `Ambiguous config: both ${CONFIG_YAML} and ${CONFIG_JSON} exist. Remove one.`,
+    );
+  }
+
+  if (yamlExists) {
+    try {
+      const text = await Bun.file(CONFIG_YAML).text();
+      const data = parse(text) ?? {};
       const config = { ...DEFAULT_CONFIG, ...data };
       log.debug("Loaded config from {path} (ignore: {ignore})", {
-        path: CONFIG_FILE,
+        path: CONFIG_YAML,
         ignore: config.ignore.join(", ") || "none",
       });
       return config;
+    } catch (e) {
+      throw new Error(`Failed to parse ${CONFIG_YAML}: ${e}`);
     }
-  } catch {
-    log.debug("Config not found or invalid at {path}, using defaults", { path: CONFIG_FILE });
   }
+
+  if (jsonExists) {
+    try {
+      const data = await Bun.file(CONFIG_JSON).json();
+      const config = { ...DEFAULT_CONFIG, ...data };
+      log.debug("Loaded config from {path} (ignore: {ignore})", {
+        path: CONFIG_JSON,
+        ignore: config.ignore.join(", ") || "none",
+      });
+      log.warn("{path} is deprecated, rename to config.yaml", { path: CONFIG_JSON });
+      return config;
+    } catch (e) {
+      throw new Error(`Failed to parse ${CONFIG_JSON}: ${e}`);
+    }
+  }
+
   log.debug("Using default config (no ignore list)");
   return DEFAULT_CONFIG;
 }
 
 export function configPath(): string {
-  return CONFIG_FILE;
+  return CONFIG_YAML;
 }
