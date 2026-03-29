@@ -89,13 +89,13 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
     return false;
   }
 
-  // Verify the app actually launched (wait up to 5s)
-  await Bun.sleep(1000);
-  const launchDeadline = Date.now() + 4_000;
-  let launched = await isAppRunning(appName);
-  while (!launched && Date.now() < launchDeadline) {
+  // Verify the app actually launched (poll up to 5s)
+  const launchDeadline = Date.now() + 5_000;
+  let launched = false;
+  while (Date.now() < launchDeadline) {
     await Bun.sleep(500);
     launched = await isAppRunning(appName);
+    if (launched) break;
   }
 
   if (!launched) {
