@@ -52,7 +52,7 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   // Escalate: if still running after graceful quit, send SIGTERM via pkill
   if (isRunning) {
     log.debug("Graceful quit timed out for {app}, sending SIGTERM", { app: appName });
-    const kill = Bun.spawn(["pkill", "-x", appName], {
+    const kill = Bun.spawn(["pkill", "-ix", appName], {
       stdout: "pipe",
       stderr: "pipe",
     });
