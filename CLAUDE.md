@@ -64,6 +64,6 @@ brew update → brew outdated --greedy --json → filter → detect running proc
 
 - Shell out to `/opt/homebrew/bin/brew` directly, parse `--json` output where available
 - No external brew wrapper libraries
-- Config lives at `~/.config/brew-bouncer/config.json` (ignore list)
+- Config lives at `~/.config/brew-bouncer/config.yaml` (ignore list; legacy `config.json` still supported)
 - Spinner output goes to stderr, data output to stdout
 - Package type indicators: 🍺 formula, 🍷 cask

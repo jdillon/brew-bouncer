@@ -20,6 +20,13 @@ import { upgrade } from "./commands/upgrade.ts";
 import { status } from "./commands/status.ts";
 import { setLogLevel } from "./logger.ts";
 import { getVersion } from "./version.ts";
+import chalk from "chalk";
+
+function handleError(err: unknown): never {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(chalk.red(`error: ${message}`));
+  process.exit(1);
+}
 
 program
   .name("brew bouncer")
@@ -54,4 +61,4 @@ program
     await status();
   });
 
-program.parse();
+program.parseAsync().catch(handleError);
