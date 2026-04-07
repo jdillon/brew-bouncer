@@ -23,7 +23,7 @@ import {
 import { detectRunningUpgrades, type DetectedApp } from "../detect/matcher.ts";
 import { restartApp } from "../restart.ts";
 import { confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart, confirmQuarantinePolicy, confirmUnquarantine, type PolicyChoice, type RestartPolicy } from "../prompt.ts";
-import { snapshotCaskQuarantine, removeQuarantine, type QuarantineInfo } from "../quarantine.ts";
+import { snapshotPackageQuarantine, removeQuarantine, type QuarantineInfo } from "../quarantine.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
 import { spinner } from "../spinner.ts";
@@ -135,22 +135,21 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     s3.done(`${preDetected.length} running app(s) will need restarting`);
   }
 
-  // Step 5b: Snapshot quarantine status for cask targets
-  const caskTargets = targets.filter((p) => p.type === "cask");
+  // Step 5b: Snapshot quarantine status for all upgrade targets.
+  // Covers cask app/binary/pkg artifacts and formula binaries — any
+  // executable previously approved by the user gets re-approved post-upgrade.
   let approvedApps = new Map<string, QuarantineInfo[]>();
 
-  if (caskTargets.length > 0 && caskInfoParsed) {
-    const s4 = spinner("Checking quarantine status...");
-    approvedApps = await snapshotCaskQuarantine(
-      caskTargets.map((c) => c.name),
-      caskInfoParsed.casks
-    );
-    const approvedCount = [...approvedApps.values()].reduce((n, apps) => n + apps.length, 0);
-    if (approvedCount === 0) {
-      s4.done("No previously-approved apps to unquarantine");
-    } else {
-      s4.done(`${approvedCount} previously-approved app(s) can be unquarantined`);
-    }
+  const s4 = spinner("Checking quarantine status...");
+  approvedApps = await snapshotPackageQuarantine(
+    targets,
+    caskInfoParsed?.casks ?? []
+  );
+  const approvedCount = [...approvedApps.values()].reduce((n, paths) => n + paths.length, 0);
+  if (approvedCount === 0) {
+    s4.done("No previously-approved executables to unquarantine");
+  } else {
+    s4.done(`${approvedCount} previously-approved executable(s) can be unquarantined`);
   }
 
   // Step 6: Show preview and confirm
@@ -232,7 +231,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
       continue;
     }
 
-    // Remove quarantine if this cask was previously approved
+    // Remove quarantine if this package had previously-approved executables
     const approvedList = approvedApps.get(pkg.name);
     if (approvedList && quarantinePolicy !== "no") {
       for (const approved of approvedList) {
@@ -241,7 +240,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
           if (ok) unquarantinedCount++;
         } else {
           // quarantinePolicy === "ask"
-          const choice = await confirmUnquarantine(approved.appPath);
+          const choice = await confirmUnquarantine(approved.path);
           if (choice) {
             const ok = await doUnquarantine(approved);
             if (ok) unquarantinedCount++;
@@ -307,8 +306,8 @@ async function doRestart(app: DetectedApp): Promise<boolean> {
 }
 
 async function doUnquarantine(info: QuarantineInfo): Promise<boolean> {
-  process.stdout.write(`  ${chalk.green("🔓")} Removing quarantine from ${chalk.bold(info.appPath)}... `);
-  const ok = await removeQuarantine(info.appPath);
+  process.stdout.write(`  ${chalk.green("🔓")} Removing quarantine from ${chalk.bold(info.path)}... `);
+  const ok = await removeQuarantine(info.path);
   console.log(ok ? chalk.green("done") : chalk.red("failed"));
   return ok;
 }

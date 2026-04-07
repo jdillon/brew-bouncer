@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Quarantine handling now covers all executables, not just cask `.app`
+  bundles. CLI casks (e.g. `claude-code`), pkg-installed casks, and formula
+  binaries previously approved by the user get re-approved after upgrade.
+  Previously only GUI apps in `/Applications` were checked.
+
 ## [0.2.0] - 2026-03-23
 
 ### Added
