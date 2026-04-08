@@ -29,6 +29,7 @@ interface PromptOption<T extends string> {
   value: T;
   label: string;
   aliases: string[];
+  shortcut: string;
 }
 
 function createInterface() {
@@ -39,13 +40,22 @@ function createInterface() {
 }
 
 function formatOption<T extends string>(option: PromptOption<T>, defaultValue: T): string {
-  const label = option.value === defaultValue
-    ? option.label.charAt(0).toUpperCase() + option.label.slice(1)
-    : option.label;
+  const shortcutIndex = option.label.toLowerCase().indexOf(option.shortcut.toLowerCase());
+  if (shortcutIndex === -1) {
+    return option.value === defaultValue
+      ? chalk.bold(option.label)
+      : chalk.dim(option.label);
+  }
 
-  return option.value === defaultValue
-    ? chalk.bold(label)
-    : chalk.dim(label);
+  const prefix = option.label.slice(0, shortcutIndex);
+  const shortcut = option.label.slice(shortcutIndex, shortcutIndex + option.shortcut.length);
+  const suffix = option.label.slice(shortcutIndex + option.shortcut.length);
+
+  if (option.value === defaultValue) {
+    return `${chalk.dim(prefix)}${chalk.bold(shortcut.toUpperCase())}${chalk.dim(suffix)}`;
+  }
+
+  return `${chalk.dim(prefix)}${chalk.cyan(shortcut)}${chalk.dim(suffix)}`;
 }
 
 async function promptChoice<T extends string>(
@@ -77,26 +87,26 @@ async function promptChoice<T extends string>(
 }
 
 const upgradeOptions: PromptOption<ConfirmChoice>[] = [
-  { value: "yes", label: "yes", aliases: ["y", "yes"] },
-  { value: "no", label: "no", aliases: ["n", "no"] },
-  { value: "select", label: "select", aliases: ["s", "select"] },
+  { value: "yes", label: "yes", aliases: ["y", "yes"], shortcut: "y" },
+  { value: "no", label: "no", aliases: ["n", "no"], shortcut: "n" },
+  { value: "select", label: "select", aliases: ["s", "select"], shortcut: "s" },
 ];
 
 const yesNoOptions: PromptOption<"yes" | "no">[] = [
-  { value: "yes", label: "yes", aliases: ["y", "yes"] },
-  { value: "no", label: "no", aliases: ["n", "no"] },
+  { value: "yes", label: "yes", aliases: ["y", "yes"], shortcut: "y" },
+  { value: "no", label: "no", aliases: ["n", "no"], shortcut: "n" },
 ];
 
 const restartPolicyOptions: PromptOption<PolicyChoice>[] = [
-  { value: "yes", label: "yes", aliases: ["y", "yes"] },
-  { value: "ask", label: "ask", aliases: ["a", "ask", "k"] },
-  { value: "no", label: "no", aliases: ["n", "no"] },
+  { value: "yes", label: "yes", aliases: ["y", "yes"], shortcut: "y" },
+  { value: "ask", label: "ask", aliases: ["a", "ask", "k"], shortcut: "a" },
+  { value: "no", label: "no", aliases: ["n", "no"], shortcut: "n" },
 ];
 
 const restartOptions: PromptOption<RestartChoice>[] = [
-  { value: "yes", label: "yes", aliases: ["y", "yes"] },
-  { value: "no", label: "no", aliases: ["n", "no"] },
-  { value: "all", label: "all", aliases: ["a", "all"] },
+  { value: "yes", label: "yes", aliases: ["y", "yes"], shortcut: "y" },
+  { value: "no", label: "no", aliases: ["n", "no"], shortcut: "n" },
+  { value: "all", label: "all", aliases: ["a", "all"], shortcut: "a" },
 ];
 
 /**
