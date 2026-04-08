@@ -20,15 +20,10 @@ import {
   extractCaskBinaryNames,
   extractCaskPkgIds,
 } from "./brew/parser.ts";
+import { HOMEBREW_BIN } from "./brew/paths.ts";
 import { brewList, pkgutilAppNames } from "./brew/runner.ts";
 
 const log = getLogger(["brew-bouncer", "quarantine"]);
-
-/**
- * The standard Homebrew prefix on Apple Silicon.
- * Cask binary artifacts are linked into ${HOMEBREW_PREFIX}/bin.
- */
-const HOMEBREW_PREFIX = "/opt/homebrew";
 
 export interface QuarantineInfo {
   packageName: string;
@@ -99,7 +94,7 @@ export async function removeQuarantine(path: string): Promise<boolean> {
  *
  * Covers:
  * - `app` artifacts (.app bundles in /Applications)
- * - `binary` artifacts (CLI binaries linked into ${HOMEBREW_PREFIX}/bin)
+ * - `binary` artifacts (CLI binaries linked into the Homebrew bin directory)
  * - pkg-installed casks with no `app` artifact (resolved via pkgutil receipts)
  */
 async function caskQuarantinePaths(cask: BrewCask): Promise<string[]> {
@@ -110,11 +105,11 @@ async function caskQuarantinePaths(cask: BrewCask): Promise<string[]> {
     paths.push(`/Applications/${appName}`);
   }
 
-  // binary artifacts → ${HOMEBREW_PREFIX}/bin/<name>
+  // binary artifacts → ${HOMEBREW_BIN}/<name>
   // xattr follows symlinks by default, so checking the linked path
   // operates on the actual file in the Caskroom.
   for (const binName of extractCaskBinaryNames(cask)) {
-    paths.push(`${HOMEBREW_PREFIX}/bin/${binName}`);
+    paths.push(`${HOMEBREW_BIN}/${binName}`);
   }
 
   // pkg-installed cask fallback: if the cask declares no `app` artifact

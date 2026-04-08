@@ -46,7 +46,8 @@ brew update → brew outdated --greedy --json → filter → detect running proc
 ### Module responsibilities
 
 - `src/commands/` — orchestration only, no brew logic
-- `src/brew/runner.ts` — all subprocess execution (`exec`, `execStreaming`). Hardcoded to `/opt/homebrew/bin/brew`.
+- `src/brew/runner.ts` — all subprocess execution (`exec`, `execStreaming`). Uses `BREW_PATH` from `src/brew/paths.ts`.
+- `src/brew/paths.ts` — Homebrew prefix/bin/brew-binary detection. Resolves `HOMEBREW_PREFIX` env → `/opt/homebrew` → `/usr/local` → `which brew`, synchronously at module load.
 - `src/brew/parser.ts` — JSON/text parsing, package filtering, installer-manual detection. Pure functions, no I/O.
 - `src/detect/` — maps packages to running processes using multiple strategies:
   - Casks: osascript (System Events) + ps (.app bundles) + pkgutil fallback
@@ -62,7 +63,7 @@ brew update → brew outdated --greedy --json → filter → detect running proc
 
 ## Conventions
 
-- Shell out to `/opt/homebrew/bin/brew` directly, parse `--json` output where available
+- Shell out to `brew` (path resolved via `src/brew/paths.ts`) directly, parse `--json` output where available
 - No external brew wrapper libraries
 - Config lives at `~/.config/brew-bouncer/config.yaml` (ignore list; legacy `config.json` still supported)
 - Spinner output goes to stderr, data output to stdout

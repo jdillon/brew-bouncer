@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Homebrew paths are now resolved at runtime via `src/brew/paths.ts`
+  (`HOMEBREW_PREFIX` env → `/opt/homebrew` → `/usr/local` → `which brew`)
+  instead of being hardcoded to `/opt/homebrew`. Respects custom install
+  locations.
+
 ### Fixed
 
 - Quarantine handling now covers all executables, not just cask `.app`
