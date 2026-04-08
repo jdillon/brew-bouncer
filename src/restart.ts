@@ -32,7 +32,7 @@ export async function restartApp(app: DetectedApp): Promise<boolean> {
 async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   const appName = app.displayName.replace(/\.app$/, "");
 
-  // Quit the app gracefully
+  // Quit the app gracefully via AppleScript
   log.debug("Quitting app: {app}", { app: appName });
   const quit = Bun.spawn(
     ["osascript", "-e", `tell application "${appName}" to quit`],
@@ -40,10 +40,42 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   );
   await quit.exited;
 
-  // Wait a moment for the app to fully quit
-  await Bun.sleep(1500);
+  // Poll until the app process is actually gone (up to 10s)
+  const quitDeadline = Date.now() + 10_000;
+  let isRunning = true;
+  while (Date.now() < quitDeadline) {
+    isRunning = await isAppRunning(appName);
+    if (!isRunning) break;
+    await Bun.sleep(500);
+  }
 
-  // Reopen it
+  // Escalate: if still running after graceful quit, send SIGTERM via pkill
+  if (isRunning) {
+    log.debug("Graceful quit timed out for {app}, sending SIGTERM", { app: appName });
+    const kill = Bun.spawn(["pkill", "-ix", appName], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await kill.exited;
+
+    // Wait up to 5 more seconds for forced quit
+    const killDeadline = Date.now() + 5_000;
+    while (Date.now() < killDeadline) {
+      isRunning = await isAppRunning(appName);
+      if (!isRunning) break;
+      await Bun.sleep(500);
+    }
+
+    if (isRunning) {
+      log.error("App {app} did not quit after SIGTERM", { app: appName });
+      return false;
+    }
+  }
+
+  // Brief settle after quit before reopening
+  await Bun.sleep(500);
+
+  // Reopen the app
   log.debug("Reopening app: {app}", { app: appName });
   const open = Bun.spawn(["open", "-a", appName], {
     stdout: "pipe",
@@ -57,7 +89,30 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
     return false;
   }
 
+  // Verify the app actually launched (poll up to 5s)
+  const launchDeadline = Date.now() + 5_000;
+  let launched = false;
+  while (Date.now() < launchDeadline) {
+    await Bun.sleep(500);
+    launched = await isAppRunning(appName);
+    if (launched) break;
+  }
+
+  if (!launched) {
+    log.error("App {app} did not appear in process list after open", { app: appName });
+    return false;
+  }
+
   return true;
+}
+
+async function isAppRunning(appName: string): Promise<boolean> {
+  const proc = Bun.spawn(["pgrep", "-ix", appName], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const exitCode = await proc.exited;
+  return exitCode === 0;
 }
 
 async function restartService(app: DetectedApp): Promise<boolean> {
