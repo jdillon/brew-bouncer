@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import { getLogger } from "@logtape/logtape";
+import { BREW_PATH } from "./paths.ts";
 
 const log = getLogger(["brew-bouncer", "brew"]);
 
@@ -22,8 +23,6 @@ export interface ExecResult {
   stderr: string;
   exitCode: number;
 }
-
-const BREW_PATH = "/opt/homebrew/bin/brew";
 
 export async function exec(args: string[]): Promise<ExecResult> {
   log.debug("exec: brew {args}", { args: args.join(" ") });

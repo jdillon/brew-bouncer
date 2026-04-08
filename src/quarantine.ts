@@ -14,14 +14,20 @@
  * limitations under the License.
  */
 import { getLogger } from "@logtape/logtape";
-import type { BrewCask } from "./brew/parser.ts";
-import { extractCaskAppNames } from "./brew/parser.ts";
+import type { BrewCask, OutdatedPackage } from "./brew/parser.ts";
+import {
+  extractCaskAppNames,
+  extractCaskBinaryNames,
+  extractCaskPkgIds,
+} from "./brew/parser.ts";
+import { HOMEBREW_BIN } from "./brew/paths.ts";
+import { brewList, pkgutilAppNames } from "./brew/runner.ts";
 
 const log = getLogger(["brew-bouncer", "quarantine"]);
 
 export interface QuarantineInfo {
-  caskName: string;
-  appPath: string;
+  packageName: string;
+  path: string;
 }
 
 /**
@@ -60,7 +66,7 @@ async function isQuarantined(path: string): Promise<boolean | null> {
 }
 
 /**
- * Remove quarantine recursively from an app bundle.
+ * Remove quarantine recursively from a path (file or app bundle).
  */
 export async function removeQuarantine(path: string): Promise<boolean> {
   const proc = Bun.spawn(
@@ -84,51 +90,123 @@ export async function removeQuarantine(path: string): Promise<boolean> {
 }
 
 /**
- * Snapshot quarantine status for cask targets before upgrade.
- * Returns a map of cask name → QuarantineInfo for casks whose apps
- * are NOT quarantined (i.e., previously approved by the user).
- * Casks that are still quarantined or have no app artifact are excluded.
+ * Enumerate executable paths to check for quarantine on a cask.
+ *
+ * Covers:
+ * - `app` artifacts (.app bundles in /Applications)
+ * - `binary` artifacts (CLI binaries linked into the Homebrew bin directory)
+ * - pkg-installed casks with no `app` artifact (resolved via pkgutil receipts)
  */
-export async function snapshotCaskQuarantine(
-  caskNames: string[],
+async function caskQuarantinePaths(cask: BrewCask): Promise<string[]> {
+  const paths: string[] = [];
+
+  // app artifacts → /Applications/<name>
+  for (const appName of extractCaskAppNames(cask)) {
+    paths.push(`/Applications/${appName}`);
+  }
+
+  // binary artifacts → ${HOMEBREW_BIN}/<name>
+  // xattr follows symlinks by default, so checking the linked path
+  // operates on the actual file in the Caskroom.
+  for (const binName of extractCaskBinaryNames(cask)) {
+    paths.push(`${HOMEBREW_BIN}/${binName}`);
+  }
+
+  // pkg-installed cask fallback: if the cask declares no `app` artifact
+  // but installs via a pkg, resolve .app names from the pkg receipt.
+  // Mirrors the detection logic in src/detect/matcher.ts.
+  if (extractCaskAppNames(cask).length === 0) {
+    const pkgIds = extractCaskPkgIds(cask);
+    const pkgResults = await Promise.all(pkgIds.map((id) => pkgutilAppNames(id)));
+    for (const appName of pkgResults.flat()) {
+      paths.push(`/Applications/${appName}`);
+    }
+  }
+
+  return paths;
+}
+
+/**
+ * Enumerate executable paths to check for quarantine on a formula.
+ *
+ * Walks `brew list <formula>` output for files under any `bin/` or `sbin/`
+ * directory. Brew bottles aren't typically quarantined, but checking is
+ * cheap and protects users who manually approved a downloaded binary.
+ */
+async function formulaQuarantinePaths(formulaName: string): Promise<string[]> {
+  const result = await brewList(formulaName);
+  if (result.exitCode !== 0) return [];
+
+  return result.stdout
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /\/(s?bin)\//.test(line));
+}
+
+/**
+ * Snapshot quarantine status for upgrade targets before upgrading.
+ *
+ * Returns a map of package name → list of paths that are NOT quarantined
+ * (i.e., previously approved by the user). Paths that are still quarantined
+ * or don't exist are excluded — only previously-approved executables are
+ * worth re-approving after the upgrade replaces them.
+ */
+export async function snapshotPackageQuarantine(
+  targets: OutdatedPackage[],
   caskInfo: BrewCask[]
 ): Promise<Map<string, QuarantineInfo[]>> {
   const approved = new Map<string, QuarantineInfo[]>();
 
-  const checks = caskInfo
-    .filter((cask) => caskNames.includes(cask.token))
-    .flatMap((cask) => {
-      const appNames = extractCaskAppNames(cask);
-      return appNames.map((appName) => ({
-        caskName: cask.token,
-        appPath: `/Applications/${appName}`,
-      }));
-    });
+  // Build (packageName, path) pairs for everything we want to check.
+  const checks: { packageName: string; path: string }[] = [];
 
-  log.debug("checking quarantine status for {count} app(s)", { count: checks.length });
+  for (const target of targets) {
+    if (target.type === "cask") {
+      const cask = caskInfo.find((c) => c.token === target.name);
+      if (!cask) continue;
+      const paths = await caskQuarantinePaths(cask);
+      for (const path of paths) {
+        checks.push({ packageName: target.name, path });
+      }
+    } else {
+      const paths = await formulaQuarantinePaths(target.name);
+      for (const path of paths) {
+        checks.push({ packageName: target.name, path });
+      }
+    }
+  }
+
+  log.debug("checking quarantine status for {count} path(s)", { count: checks.length });
 
   const results = await Promise.all(
     checks.map(async (check) => {
-      const quarantined = await isQuarantined(check.appPath);
+      const quarantined = await isQuarantined(check.path);
       return { ...check, quarantined };
     })
   );
 
   for (const result of results) {
     // false = attribute absent (previously approved)
-    // null = path doesn't exist (skip — don't treat as approved)
-    // true = quarantined (skip — user never approved)
+    // null  = path doesn't exist (skip — don't treat as approved)
+    // true  = quarantined (skip — user never approved)
     if (result.quarantined === false) {
-      log.debug("previously approved (not quarantined): {cask} {appPath}", { cask: result.caskName, appPath: result.appPath });
-      const existing = approved.get(result.caskName) ?? [];
-      existing.push({ caskName: result.caskName, appPath: result.appPath });
-      approved.set(result.caskName, existing);
+      log.debug("previously approved (not quarantined): {pkg} {path}", {
+        pkg: result.packageName,
+        path: result.path,
+      });
+      const existing = approved.get(result.packageName) ?? [];
+      existing.push({ packageName: result.packageName, path: result.path });
+      approved.set(result.packageName, existing);
     } else if (result.quarantined === null) {
-      log.debug("path not found, skipping: {cask} {appPath}", { cask: result.caskName, appPath: result.appPath });
+      log.debug("path not found, skipping: {pkg} {path}", {
+        pkg: result.packageName,
+        path: result.path,
+      });
     }
   }
 
-  const totalApproved = [...approved.values()].reduce((n, apps) => n + apps.length, 0);
+  const totalApproved = [...approved.values()].reduce((n, paths) => n + paths.length, 0);
   log.debug("quarantine snapshot: {approved} approved, {skipped} skipped/quarantined", {
     approved: totalApproved,
     skipped: results.length - totalApproved,
