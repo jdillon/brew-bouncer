@@ -55,29 +55,6 @@ export async function exec(args: string[]): Promise<ExecResult> {
   return { stdout, stderr, exitCode };
 }
 
-async function pipeAndCapture(
-  stream: ReadableStream<Uint8Array> | null,
-  sink: NodeJS.WriteStream
-): Promise<string> {
-  if (!stream) return "";
-
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let captured = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-
-    sink.write(value);
-    captured += decoder.decode(value, { stream: true });
-  }
-
-  captured += decoder.decode();
-  return captured;
-}
-
 /**
  * Run a brew command with stdout/stderr streaming directly to the terminal.
  * Use for --verbose passthrough where the user wants to see everything.
@@ -86,21 +63,17 @@ export async function execStreaming(args: string[]): Promise<ExecResult> {
   log.debug("execStreaming: brew {args}", { args: args.join(" ") });
 
   const proc = Bun.spawn([BREW_PATH, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
+    stdout: "inherit",
+    stderr: "inherit",
   });
 
-  const [stdout, stderr, exitCode] = await Promise.all([
-    pipeAndCapture(proc.stdout, process.stdout),
-    pipeAndCapture(proc.stderr, process.stderr),
-    proc.exited,
-  ]);
+  const exitCode = await proc.exited;
 
   log.debug("execStreaming: brew {args} exit {exitCode}", {
     args: args.join(" "),
     exitCode,
   });
-  return { stdout, stderr, exitCode };
+  return { stdout: "", stderr: "", exitCode };
 }
 
 export async function brewUpdate(): Promise<ExecResult> {
