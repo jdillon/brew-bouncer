@@ -163,7 +163,10 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   renderSummary(targets.length, detectedMap.size, skipped.length);
 
   if (!options.yes) {
-    const choice = await confirmUpgrade("Proceed with upgrade?");
+    const choice = await confirmUpgrade(
+      "Proceed with upgrade?",
+      config.promptDefaults.upgrade
+    );
     if (choice === "no") {
       console.log("Aborted.");
       return;
@@ -187,7 +190,10 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     if (options.yes) {
       restartPolicy = "yes";
     } else {
-      restartPolicy = await confirmRestartPolicy(affectedCount);
+      restartPolicy = await confirmRestartPolicy(
+        affectedCount,
+        config.promptDefaults.restartPolicy
+      );
     }
   }
 
@@ -201,7 +207,10 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     if (options.yes) {
       quarantinePolicy = "yes";
     } else {
-      quarantinePolicy = await confirmQuarantinePolicy(approvedAppCount);
+      quarantinePolicy = await confirmQuarantinePolicy(
+        approvedAppCount,
+        config.promptDefaults.quarantinePolicy
+      );
     }
   }
 
@@ -311,4 +320,3 @@ async function doUnquarantine(info: QuarantineInfo): Promise<boolean> {
   console.log(ok ? chalk.green("done") : chalk.red("failed"));
   return ok;
 }
-
