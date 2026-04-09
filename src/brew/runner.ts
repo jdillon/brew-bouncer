@@ -59,7 +59,7 @@ export async function exec(args: string[]): Promise<ExecResult> {
  * Run a brew command with stdout/stderr streaming directly to the terminal.
  * Use for --verbose passthrough where the user wants to see everything.
  */
-export async function execStreaming(args: string[]): Promise<number> {
+export async function execStreaming(args: string[]): Promise<ExecResult> {
   log.debug("execStreaming: brew {args}", { args: args.join(" ") });
 
   const proc = Bun.spawn([BREW_PATH, ...args], {
@@ -68,11 +68,12 @@ export async function execStreaming(args: string[]): Promise<number> {
   });
 
   const exitCode = await proc.exited;
+
   log.debug("execStreaming: brew {args} exit {exitCode}", {
     args: args.join(" "),
     exitCode,
   });
-  return exitCode;
+  return { stdout: "", stderr: "", exitCode };
 }
 
 export async function brewUpdate(): Promise<ExecResult> {
@@ -88,7 +89,7 @@ export async function brewOutdated(): Promise<ExecResult> {
  * Brew owns stdout/stderr so the user sees all output including
  * prompts, caveats, and progress.
  */
-export async function brewUpgrade(name: string): Promise<number> {
+export async function brewUpgrade(name: string): Promise<ExecResult> {
   return execStreaming(["upgrade", name]);
 }
 

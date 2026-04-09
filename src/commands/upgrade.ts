@@ -36,6 +36,12 @@ interface UpgradeOptions {
   only?: string[];
 }
 
+interface UpgradeDiagnostic {
+  packageName: string;
+  level: "warning" | "error";
+  message: string;
+}
+
 export async function upgrade(options: UpgradeOptions): Promise<void> {
   const config = await loadConfig();
 
@@ -225,6 +231,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   let manualRestartCount = 0;
   let unquarantinedCount = 0;
   let restartAll = restartPolicy === "yes";
+  const diagnostics: UpgradeDiagnostic[] = [];
 
   for (const pkg of targets) {
     const typeIcon = pkg.type === "cask" ? "🍷" : "🍺";
@@ -233,8 +240,10 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
         chalk.dim(` ${pkg.installedVersions[0]} → ${pkg.currentVersion}`)
     );
 
-    const exitCode = await brewUpgrade(pkg.name);
-    if (exitCode !== 0) {
+    const result = await brewUpgrade(pkg.name);
+    diagnostics.push(...collectUpgradeDiagnostics(pkg.name, result.stdout, result.stderr));
+
+    if (result.exitCode !== 0) {
       failCount++;
       console.log("");
       continue;
@@ -301,6 +310,8 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     parts.push(chalk.dim(`${manualRestartCount} manual restart required`));
   }
   console.log(parts.join(chalk.dim(" · ")));
+
+  renderDiagnosticsSummary(diagnostics);
 }
 
 function isManualRestartOnly(app: DetectedApp): boolean {
@@ -319,4 +330,54 @@ async function doUnquarantine(info: QuarantineInfo): Promise<boolean> {
   const ok = await removeQuarantine(info.path);
   console.log(ok ? chalk.green("done") : chalk.red("failed"));
   return ok;
+}
+
+function collectUpgradeDiagnostics(
+  packageName: string,
+  stdout: string,
+  stderr: string
+): UpgradeDiagnostic[] {
+  const lines = `${stdout}\n${stderr}`
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const diagnostics: UpgradeDiagnostic[] = [];
+  const seen = new Set<string>();
+
+  for (const line of lines) {
+    const level = classifyDiagnostic(line);
+    if (!level) continue;
+
+    const key = `${level}:${line}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    diagnostics.push({ packageName, level, message: line });
+  }
+
+  return diagnostics;
+}
+
+function classifyDiagnostic(line: string): UpgradeDiagnostic["level"] | null {
+  if (/^Warning:/.test(line)) return "warning";
+  if (/^Error:/.test(line)) return "error";
+  return null;
+}
+
+function renderDiagnosticsSummary(diagnostics: UpgradeDiagnostic[]): void {
+  if (diagnostics.length === 0) return;
+
+  console.log(chalk.bold("\nWarnings and errors\n"));
+
+  let currentPackage = "";
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.packageName !== currentPackage) {
+      currentPackage = diagnostic.packageName;
+      console.log(chalk.bold(diagnostic.packageName));
+    }
+
+    const icon = diagnostic.level === "error" ? chalk.red("✗") : chalk.yellow("!");
+    console.log(`  ${icon} ${diagnostic.message}`);
+  }
 }
