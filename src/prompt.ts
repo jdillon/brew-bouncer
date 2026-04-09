@@ -21,29 +21,103 @@ import { shortVersion, formatStatus } from "./output/format.ts";
 import chalk from "chalk";
 
 export type ConfirmChoice = "yes" | "no" | "select";
+export type PolicyChoice = "yes" | "ask" | "no";
+export type RestartPolicy = PolicyChoice;
+export type RestartChoice = "yes" | "no" | "all";
+
+interface PromptOption<T extends string> {
+  value: T;
+  label: string;
+  aliases: string[];
+  shortcut: string;
+}
+
+function createInterface() {
+  return readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+}
+
+function formatOption<T extends string>(option: PromptOption<T>, defaultValue: T): string {
+  const shortcutIndex = option.label.toLowerCase().indexOf(option.shortcut.toLowerCase());
+  if (shortcutIndex === -1) {
+    return option.value === defaultValue
+      ? chalk.bold(option.label)
+      : chalk.dim(option.label);
+  }
+
+  const prefix = option.label.slice(0, shortcutIndex);
+  const shortcut = option.label.slice(shortcutIndex, shortcutIndex + option.shortcut.length);
+  const suffix = option.label.slice(shortcutIndex + option.shortcut.length);
+
+  if (option.value === defaultValue) {
+    return `${chalk.dim(prefix)}${chalk.bold(shortcut.toUpperCase())}${chalk.dim(suffix)}`;
+  }
+
+  return `${chalk.dim(prefix)}${chalk.cyan(shortcut)}${chalk.dim(suffix)}`;
+}
+
+async function promptChoice<T extends string>(
+  message: string,
+  options: PromptOption<T>[],
+  defaultValue: T
+): Promise<T> {
+  const rl = createInterface();
+
+  try {
+    const renderedOptions = options.map((option) => formatOption(option, defaultValue)).join(" / ");
+    const answer = await rl.question(`${message} [${renderedOptions}] `);
+    const trimmed = answer.trim().toLowerCase();
+
+    if (trimmed.length === 0) {
+      return defaultValue;
+    }
+
+    for (const option of options) {
+      if (option.aliases.includes(trimmed)) {
+        return option.value;
+      }
+    }
+
+    return defaultValue;
+  } finally {
+    rl.close();
+  }
+}
+
+const upgradeOptions: PromptOption<ConfirmChoice>[] = [
+  { value: "yes", label: "yes", aliases: ["y", "yes"], shortcut: "y" },
+  { value: "no", label: "no", aliases: ["n", "no"], shortcut: "n" },
+  { value: "select", label: "select", aliases: ["s", "select"], shortcut: "s" },
+];
+
+const yesNoOptions: PromptOption<"yes" | "no">[] = [
+  { value: "yes", label: "yes", aliases: ["y", "yes"], shortcut: "y" },
+  { value: "no", label: "no", aliases: ["n", "no"], shortcut: "n" },
+];
+
+const restartPolicyOptions: PromptOption<PolicyChoice>[] = [
+  { value: "yes", label: "yes", aliases: ["y", "yes"], shortcut: "y" },
+  { value: "ask", label: "ask", aliases: ["a", "ask", "k"], shortcut: "a" },
+  { value: "no", label: "no", aliases: ["n", "no"], shortcut: "n" },
+];
+
+const restartOptions: PromptOption<RestartChoice>[] = [
+  { value: "yes", label: "yes", aliases: ["y", "yes"], shortcut: "y" },
+  { value: "no", label: "no", aliases: ["n", "no"], shortcut: "n" },
+  { value: "all", label: "all", aliases: ["a", "all"], shortcut: "a" },
+];
 
 /**
  * Prompt for upgrade confirmation with select option.
  * Y = proceed with all, n = abort, s = open package selector.
  */
-export async function confirmUpgrade(message: string): Promise<ConfirmChoice> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    const answer = await rl.question(
-      `${message} [${chalk.bold("Y")}/${chalk.dim("n")}/${chalk.cyan("s")}elect] `
-    );
-    const trimmed = answer.trim().toLowerCase();
-
-    if (trimmed === "n" || trimmed === "no") return "no";
-    if (trimmed === "s" || trimmed === "select") return "select";
-    return "yes";
-  } finally {
-    rl.close();
-  }
+export async function confirmUpgrade(
+  message: string,
+  defaultChoice: ConfirmChoice = "yes"
+): Promise<ConfirmChoice> {
+  return promptChoice(message, upgradeOptions, defaultChoice);
 }
 
 /**
@@ -97,32 +171,19 @@ export async function selectPackages(
   return packages.filter((p) => selectedSet.has(p.name));
 }
 
-export type PolicyChoice = "yes" | "ask" | "no";
-
-export type RestartPolicy = PolicyChoice;
-
 /**
  * Prompt for restart policy before upgrades begin.
  * yes = auto-restart all, ask = prompt per app, no = skip all restarts.
  */
-export async function confirmRestartPolicy(affectedCount: number): Promise<RestartPolicy> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    const answer = await rl.question(
-      `Restart ${affectedCount} affected app(s) after upgrade? [${chalk.dim("y")}es / as${chalk.cyan("k")} each / ${chalk.bold("N")}o] `
-    );
-    const trimmed = answer.trim().toLowerCase();
-
-    if (trimmed === "y" || trimmed === "yes") return "yes";
-    if (trimmed === "k" || trimmed === "ask") return "ask";
-    return "no";
-  } finally {
-    rl.close();
-  }
+export async function confirmRestartPolicy(
+  affectedCount: number,
+  defaultChoice: RestartPolicy = "no"
+): Promise<RestartPolicy> {
+  return promptChoice(
+    `Restart ${affectedCount} affected app(s) after upgrade?`,
+    restartPolicyOptions,
+    defaultChoice
+  );
 }
 
 /**
@@ -130,24 +191,15 @@ export async function confirmRestartPolicy(affectedCount: number): Promise<Resta
  * yes = auto-remove quarantine from all previously-approved apps,
  * ask = prompt per app, no = don't touch quarantine.
  */
-export async function confirmQuarantinePolicy(approvedCount: number): Promise<PolicyChoice> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    const answer = await rl.question(
-      `Remove quarantine from ${approvedCount} previously-approved app(s) after upgrade? [${chalk.dim("y")}es / ${chalk.bold("N")}o / as${chalk.cyan("k")}] `
-    );
-    const trimmed = answer.trim().toLowerCase();
-
-    if (trimmed === "y" || trimmed === "yes") return "yes";
-    if (trimmed === "k" || trimmed === "ask") return "ask";
-    return "no";
-  } finally {
-    rl.close();
-  }
+export async function confirmQuarantinePolicy(
+  approvedCount: number,
+  defaultChoice: PolicyChoice = "no"
+): Promise<PolicyChoice> {
+  return promptChoice(
+    `Remove quarantine from ${approvedCount} previously-approved app(s) after upgrade?`,
+    restartPolicyOptions,
+    defaultChoice
+  );
 }
 
 /**
@@ -155,44 +207,13 @@ export async function confirmQuarantinePolicy(approvedCount: number): Promise<Po
  * Y = remove (default), n = skip.
  */
 export async function confirmUnquarantine(path: string): Promise<boolean> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    const answer = await rl.question(
-      `  Remove quarantine from ${path}? [${chalk.bold("Y")}/${chalk.dim("n")}] `
-    );
-    const trimmed = answer.trim().toLowerCase();
-    return trimmed !== "n" && trimmed !== "no";
-  } finally {
-    rl.close();
-  }
+  return (await promptChoice(`  Remove quarantine from ${path}?`, yesNoOptions, "yes")) === "yes";
 }
-
-export type RestartChoice = "yes" | "no" | "all";
 
 /**
  * Prompt for restart with yes/no/all options.
  * Returns "yes" to restart this one, "no" to skip, "all" to restart remaining without prompting.
  */
 export async function confirmRestart(appName: string): Promise<RestartChoice> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  try {
-    const answer = await rl.question(
-      `Restart ${appName}? [${chalk.dim("y")}/${chalk.bold("N")}/${chalk.cyan("a")}ll] `
-    );
-    const trimmed = answer.trim().toLowerCase();
-
-    if (trimmed === "a" || trimmed === "all") return "all";
-    if (trimmed === "y" || trimmed === "yes") return "yes";
-    return "no";
-  } finally {
-    rl.close();
-  }
+  return promptChoice(`Restart ${appName}?`, restartOptions, "no");
 }

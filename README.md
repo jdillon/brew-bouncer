@@ -43,6 +43,30 @@ brew bouncer upgrade firefox slack
 brew bouncer upgrade --yes
 ```
 
+## Configuration
+
+Optional config lives at `~/.config/brew-bouncer/config.yaml`.
+
+```yaml
+ignore:
+  - some-cask
+
+promptDefaults:
+  upgrade: yes
+  restartPolicy: yes
+  quarantinePolicy: yes
+```
+
+`promptDefaults` controls the default choice when you press Enter at the main
+upgrade prompts:
+
+- `upgrade`: `yes`, `no`, or `select`
+- `restartPolicy`: `yes`, `ask`, or `no`
+- `quarantinePolicy`: `yes`, `ask`, or `no`
+
+If omitted, the built-in defaults remain `yes` for upgrade confirmation and
+`no` for restart/quarantine policy prompts.
+
 ## Building from source
 
 Requires [Bun](https://bun.sh).
