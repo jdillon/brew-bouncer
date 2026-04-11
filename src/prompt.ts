@@ -188,15 +188,15 @@ export async function confirmRestartPolicy(
 
 /**
  * Prompt for quarantine policy before upgrades begin.
- * yes = auto-remove quarantine from all previously-approved apps,
- * ask = prompt per app, no = don't touch quarantine.
+ * yes = auto-remove quarantine from any quarantined executables post-upgrade,
+ * ask = prompt per executable, no = don't touch quarantine.
  */
 export async function confirmQuarantinePolicy(
-  approvedCount: number,
+  executableCount: number,
   defaultChoice: PolicyChoice = "no"
 ): Promise<PolicyChoice> {
   return promptChoice(
-    `Remove quarantine from ${approvedCount} previously-approved app(s) after upgrade?`,
+    `Remove quarantine from upgraded executables if quarantined? (${executableCount} to check)`,
     restartPolicyOptions,
     defaultChoice
   );
