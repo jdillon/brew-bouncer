@@ -20,21 +20,16 @@ import {
   extractCaskBinaryNames,
   extractCaskPkgIds,
 } from "./brew/parser.ts";
-import { HOMEBREW_BIN } from "./brew/paths.ts";
+import { HOMEBREW_PREFIX, HOMEBREW_BIN } from "./brew/paths.ts";
 import { brewList, pkgutilAppNames } from "./brew/runner.ts";
 
 const log = getLogger(["brew-bouncer", "quarantine"]);
-
-export interface QuarantineInfo {
-  packageName: string;
-  path: string;
-}
 
 /**
  * Check if a file/bundle has the com.apple.quarantine extended attribute.
  * Returns true if quarantined, false if attribute is absent, null if path doesn't exist.
  */
-async function isQuarantined(path: string): Promise<boolean | null> {
+export async function isQuarantined(path: string): Promise<boolean | null> {
   const proc = Bun.spawn(["xattr", "-p", "com.apple.quarantine", path], {
     stdout: "pipe",
     stderr: "pipe",
@@ -129,88 +124,74 @@ async function caskQuarantinePaths(cask: BrewCask): Promise<string[]> {
 /**
  * Enumerate executable paths to check for quarantine on a formula.
  *
- * Walks `brew list <formula>` output for files under any `bin/` or `sbin/`
- * directory. Brew bottles aren't typically quarantined, but checking is
- * cheap and protects users who manually approved a downloaded binary.
+ * Extracts top-level bin/ and sbin/ entries from `brew list` output and
+ * returns their HOMEBREW_BIN symlink paths rather than the raw Cellar paths.
+ * This is critical: after `brew upgrade`, the old Cellar version directory is
+ * deleted, so any path containing the old version would fail. The symlink in
+ * HOMEBREW_BIN is updated by brew to point to the new version.
+ *
+ * Only top-level bin/sbin entries are included — nested paths like
+ * libexec/bin/ or Frameworks/.../bin/ are internal and not user-facing.
  */
 async function formulaQuarantinePaths(formulaName: string): Promise<string[]> {
   const result = await brewList(formulaName);
   if (result.exitCode !== 0) return [];
 
-  return result.stdout
-    .trim()
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /\/(s?bin)\//.test(line));
+  const paths: string[] = [];
+  for (const line of result.stdout.trim().split("\n")) {
+    // Match only top-level bin/sbin: <prefix>/Cellar/<name>/<version>/(s)bin/<binary>
+    const match = line.trim().match(/\/Cellar\/[^/]+\/[^/]+\/(s?bin)\/(.+)$/);
+    if (match) {
+      const dir = match[1] === "sbin" ? `${HOMEBREW_PREFIX}/sbin` : HOMEBREW_BIN;
+      paths.push(`${dir}/${match[2]}`);
+    }
+  }
+  return paths;
 }
 
 /**
- * Snapshot quarantine status for upgrade targets before upgrading.
+ * Enumerate executable paths for upgrade targets.
  *
- * Returns a map of package name → list of paths that are NOT quarantined
- * (i.e., previously approved by the user). Paths that are still quarantined
- * or don't exist are excluded — only previously-approved executables are
- * worth re-approving after the upgrade replaces them.
+ * Returns a map of package name → list of executable paths to check for
+ * quarantine after upgrade. Paths that don't exist yet are excluded (they
+ * can't have quarantine). This intentionally does NOT filter by current
+ * quarantine status — both previously-approved and never-approved executables
+ * are included so that post-upgrade detection works for packages (like
+ * claude-code) whose binaries ship quarantined and are never pre-approved.
  */
-export async function snapshotPackageQuarantine(
+export async function enumeratePackageExecutables(
   targets: OutdatedPackage[],
   caskInfo: BrewCask[]
-): Promise<Map<string, QuarantineInfo[]>> {
-  const approved = new Map<string, QuarantineInfo[]>();
-
-  // Build (packageName, path) pairs for everything we want to check.
-  const checks: { packageName: string; path: string }[] = [];
+): Promise<Map<string, string[]>> {
+  const packagePaths = new Map<string, string[]>();
 
   for (const target of targets) {
+    let paths: string[];
     if (target.type === "cask") {
       const cask = caskInfo.find((c) => c.token === target.name);
       if (!cask) continue;
-      const paths = await caskQuarantinePaths(cask);
-      for (const path of paths) {
-        checks.push({ packageName: target.name, path });
-      }
+      paths = await caskQuarantinePaths(cask);
     } else {
-      const paths = await formulaQuarantinePaths(target.name);
-      for (const path of paths) {
-        checks.push({ packageName: target.name, path });
-      }
+      paths = await formulaQuarantinePaths(target.name);
+    }
+
+    // Filter to paths that actually exist (can't have quarantine if not present)
+    const existing = await Promise.all(
+      paths.map(async (p) => {
+        const q = await isQuarantined(p);
+        return q !== null ? p : null; // null = path doesn't exist
+      })
+    );
+    const found = existing.filter((p): p is string => p !== null);
+
+    if (found.length > 0) {
+      log.debug("enumerated {count} executable(s) for {pkg}", {
+        count: found.length,
+        pkg: target.name,
+      });
+      packagePaths.set(target.name, found);
     }
   }
 
-  log.debug("checking quarantine status for {count} path(s)", { count: checks.length });
-
-  const results = await Promise.all(
-    checks.map(async (check) => {
-      const quarantined = await isQuarantined(check.path);
-      return { ...check, quarantined };
-    })
-  );
-
-  for (const result of results) {
-    // false = attribute absent (previously approved)
-    // null  = path doesn't exist (skip — don't treat as approved)
-    // true  = quarantined (skip — user never approved)
-    if (result.quarantined === false) {
-      log.debug("previously approved (not quarantined): {pkg} {path}", {
-        pkg: result.packageName,
-        path: result.path,
-      });
-      const existing = approved.get(result.packageName) ?? [];
-      existing.push({ packageName: result.packageName, path: result.path });
-      approved.set(result.packageName, existing);
-    } else if (result.quarantined === null) {
-      log.debug("path not found, skipping: {pkg} {path}", {
-        pkg: result.packageName,
-        path: result.path,
-      });
-    }
-  }
-
-  const totalApproved = [...approved.values()].reduce((n, paths) => n + paths.length, 0);
-  log.debug("quarantine snapshot: {approved} approved, {skipped} skipped/quarantined", {
-    approved: totalApproved,
-    skipped: results.length - totalApproved,
-  });
-
-  return approved;
+  return packagePaths;
 }
