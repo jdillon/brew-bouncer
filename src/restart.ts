@@ -31,6 +31,7 @@ export async function restartApp(app: DetectedApp): Promise<boolean> {
 
 async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   const appName = app.displayName.replace(/\.app$/, "");
+  const detectedPids = app.pids;
 
   // Quit the app gracefully via AppleScript
   log.debug("Quitting app: {app}", { app: appName });
@@ -40,34 +41,43 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   );
   await quit.exited;
 
-  // Poll until the app process is actually gone (up to 10s)
+  // Poll until the originally-detected PIDs are gone (up to 10s).
+  // Using PIDs (not name match) avoids killing unrelated processes that share
+  // a case-insensitive name (e.g. Claude.app vs the `claude` CLI).
   const quitDeadline = Date.now() + 10_000;
-  let isRunning = true;
+  let livePids = detectedPids;
   while (Date.now() < quitDeadline) {
-    isRunning = await isAppRunning(appName);
-    if (!isRunning) break;
+    livePids = filterLivePids(livePids);
+    if (livePids.length === 0) break;
     await Bun.sleep(500);
   }
 
-  // Escalate: if still running after graceful quit, send SIGTERM via pkill
-  if (isRunning) {
-    log.debug("Graceful quit timed out for {app}, sending SIGTERM", { app: appName });
-    const kill = Bun.spawn(["pkill", "-ix", appName], {
-      stdout: "pipe",
-      stderr: "pipe",
+  // Escalate: SIGTERM only the specific surviving PIDs we detected
+  if (livePids.length > 0) {
+    log.debug("Graceful quit timed out for {app}, sending SIGTERM to {pids}", {
+      app: appName,
+      pids: livePids.join(","),
     });
-    await kill.exited;
+    for (const pid of livePids) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        // Process may have just exited — ignore
+      }
+    }
 
-    // Wait up to 5 more seconds for forced quit
     const killDeadline = Date.now() + 5_000;
     while (Date.now() < killDeadline) {
-      isRunning = await isAppRunning(appName);
-      if (!isRunning) break;
+      livePids = filterLivePids(livePids);
+      if (livePids.length === 0) break;
       await Bun.sleep(500);
     }
 
-    if (isRunning) {
-      log.error("App {app} did not quit after SIGTERM", { app: appName });
+    if (livePids.length > 0) {
+      log.error("App {app} did not quit after SIGTERM (pids {pids})", {
+        app: appName,
+        pids: livePids.join(","),
+      });
       return false;
     }
   }
@@ -89,7 +99,9 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
     return false;
   }
 
-  // Verify the app actually launched (poll up to 5s)
+  // Verify the app actually launched (poll up to 5s).
+  // Case-sensitive exact match — avoids matching CLI binaries with shared
+  // lowercase names (Claude.app vs `claude`).
   const launchDeadline = Date.now() + 5_000;
   let launched = false;
   while (Date.now() < launchDeadline) {
@@ -106,8 +118,19 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   return true;
 }
 
+function filterLivePids(pids: number[]): number[] {
+  return pids.filter((pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 async function isAppRunning(appName: string): Promise<boolean> {
-  const proc = Bun.spawn(["pgrep", "-ix", appName], {
+  const proc = Bun.spawn(["pgrep", "-x", appName], {
     stdout: "pipe",
     stderr: "pipe",
   });
