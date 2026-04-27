@@ -17,11 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - GUI app restart no longer kills unrelated CLI processes that share a
-  case-insensitive name. Quit verification and force-quit now target the
-  originally-detected PIDs directly, and launch verification uses
-  case-sensitive `pgrep -x`. Previously, restarting `Claude.app` would also
-  terminate running `claude` CLI processes due to `pgrep -ix` / `pkill -ix`
-  matching both.
+  case-insensitive name. Cask-GUI detection now captures PIDs and the
+  `.app` bundle path via `ps`. Restart targets those specific PIDs for
+  quit verification and SIGTERM, with a defense-in-depth re-check that
+  each PID's executable still resides under the originally-detected
+  bundle path before signaling (guards against PID recycling).
+  Launch verification uses case-sensitive `pgrep -x`. Previously,
+  restarting `Claude.app` could `pkill -ix Claude` and terminate the
+  `claude` CLI binary because `-i` matched both names.
 - Quarantine handling now covers all executables, not just cask `.app`
   bundles. CLI casks (e.g. `claude-code`), pkg-installed casks, and formula
   binaries previously approved by the user get re-approved after upgrade.

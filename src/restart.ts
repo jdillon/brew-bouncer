@@ -32,6 +32,7 @@ export async function restartApp(app: DetectedApp): Promise<boolean> {
 async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   const appName = app.displayName.replace(/\.app$/, "");
   const detectedPids = app.pids;
+  const bundlePath = app.bundlePath;
 
   // Quit the app gracefully via AppleScript
   log.debug("Quitting app: {app}", { app: appName });
@@ -52,33 +53,56 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
     await Bun.sleep(500);
   }
 
-  // Escalate: SIGTERM only the specific surviving PIDs we detected
+  // Escalate: SIGTERM only the specific surviving PIDs we detected.
+  // Defense-in-depth: if we know the .app bundle path, re-verify each PID's
+  // current executable still lives inside that bundle. PIDs can be recycled
+  // between detection and restart, so a stale PID could now belong to an
+  // unrelated process. Skip any PID whose exec path no longer matches.
   if (livePids.length > 0) {
-    log.debug("Graceful quit timed out for {app}, sending SIGTERM to {pids}", {
-      app: appName,
-      pids: livePids.join(","),
-    });
-    for (const pid of livePids) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-        // Process may have just exited — ignore
-      }
+    const verified = bundlePath
+      ? await filterPidsByBundle(livePids, bundlePath)
+      : livePids;
+
+    const skipped = livePids.filter((p) => !verified.includes(p));
+    if (skipped.length > 0) {
+      log.warn(
+        "Skipping SIGTERM for {count} pids no longer in bundle {bundle}: {pids}",
+        {
+          count: skipped.length,
+          bundle: bundlePath ?? "<unknown>",
+          pids: skipped.join(","),
+        }
+      );
     }
 
-    const killDeadline = Date.now() + 5_000;
-    while (Date.now() < killDeadline) {
-      livePids = filterLivePids(livePids);
-      if (livePids.length === 0) break;
-      await Bun.sleep(500);
-    }
-
-    if (livePids.length > 0) {
-      log.error("App {app} did not quit after SIGTERM (pids {pids})", {
+    if (verified.length > 0) {
+      log.debug("Graceful quit timed out for {app}, sending SIGTERM to {pids}", {
         app: appName,
-        pids: livePids.join(","),
+        pids: verified.join(","),
       });
-      return false;
+      for (const pid of verified) {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {
+          // Process may have just exited — ignore
+        }
+      }
+
+      const killDeadline = Date.now() + 5_000;
+      let stillLive = verified;
+      while (Date.now() < killDeadline) {
+        stillLive = filterLivePids(stillLive);
+        if (stillLive.length === 0) break;
+        await Bun.sleep(500);
+      }
+
+      if (stillLive.length > 0) {
+        log.error("App {app} did not quit after SIGTERM (pids {pids})", {
+          app: appName,
+          pids: stillLive.join(","),
+        });
+        return false;
+      }
     }
   }
 
@@ -127,6 +151,40 @@ function filterLivePids(pids: number[]): number[] {
       return false;
     }
   });
+}
+
+/**
+ * Return only the PIDs whose executable path currently resides under the
+ * given .app bundle. Guards against PID recycling between detection and
+ * restart — a stale PID could otherwise SIGTERM an unrelated process.
+ */
+async function filterPidsByBundle(
+  pids: number[],
+  bundlePath: string,
+): Promise<number[]> {
+  if (pids.length === 0) return [];
+
+  const proc = Bun.spawn(["ps", "-o", "pid=,comm=", "-p", ...pids.map(String)], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = await new Response(proc.stdout).text();
+  await proc.exited;
+
+  const prefix = bundlePath.endsWith("/") ? bundlePath : bundlePath + "/";
+  const verified: number[] = [];
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const spaceIdx = trimmed.indexOf(" ");
+    if (spaceIdx === -1) continue;
+    const pid = Number.parseInt(trimmed.slice(0, spaceIdx), 10);
+    const command = trimmed.slice(spaceIdx + 1);
+    if (Number.isFinite(pid) && command.startsWith(prefix)) {
+      verified.push(pid);
+    }
+  }
+  return verified;
 }
 
 async function isAppRunning(appName: string): Promise<boolean> {

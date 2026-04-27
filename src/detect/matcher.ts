@@ -49,6 +49,13 @@ export interface DetectedApp {
   kind: "cask-gui" | "cask-cli" | "formula-cli" | "formula-service";
   displayName: string;
   pids: number[];
+  /**
+   * For cask-gui: absolute path to the .app bundle (when discoverable).
+   * Used by the restart layer to verify a PID belongs to this exact bundle
+   * before sending SIGTERM, preventing collateral damage to unrelated
+   * processes that happen to share a name.
+   */
+  bundlePath?: string;
 }
 
 export type ProgressCallback = (message: string) => void;
@@ -111,13 +118,19 @@ export async function detectRunningUpgrades(
       const matched = matchCaskToRunningApps(appNames, runningApps);
 
       if (matched.length > 0) {
+        // Aggregate PIDs across all matched bundles (helpers, multi-window etc)
+        const pids = matched.flatMap((m) => m.pids);
+        // Prefer the first matched bundle's path for verification. Cask app
+        // artifacts map 1:1 to a bundle, so multiple matches are unusual.
+        const bundlePath = matched[0]!.bundlePath;
         detected.push({
           packageName: pkg.name,
           oldVersion: pkg.installedVersions[0] ?? "unknown",
           newVersion: pkg.currentVersion,
           kind: "cask-gui",
           displayName: matched[0]!.bundleName,
-          pids: [],
+          pids,
+          bundlePath,
         });
         continue;
       }
