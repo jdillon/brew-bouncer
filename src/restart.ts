@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import type { DetectedApp } from "./detect/matcher.ts";
+import { pidsInBundle } from "./detect/casks.ts";
 import { exec } from "./brew/runner.ts";
 import { log } from "./logger.ts";
 
@@ -45,10 +46,18 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   // Poll until the originally-detected PIDs are gone (up to 10s).
   // Using PIDs (not name match) avoids killing unrelated processes that share
   // a case-insensitive name (e.g. Claude.app vs the `claude` CLI).
+  //
+  // When detectedPids is empty (e.g. cask app was supplemented via osascript
+  // and ps didn't see it), re-scan by bundlePath each iteration so the wait
+  // actually observes quitting processes instead of short-circuiting.
   const quitDeadline = Date.now() + 10_000;
   let livePids = detectedPids;
   while (Date.now() < quitDeadline) {
-    livePids = filterLivePids(livePids);
+    if (livePids.length === 0 && detectedPids.length === 0 && bundlePath) {
+      livePids = await pidsInBundle(bundlePath);
+    } else {
+      livePids = filterLivePids(livePids);
+    }
     if (livePids.length === 0) break;
     await Bun.sleep(500);
   }
@@ -123,14 +132,24 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
     return false;
   }
 
-  // Verify the app actually launched (poll up to 5s).
-  // Case-sensitive exact match — avoids matching CLI binaries with shared
-  // lowercase names (Claude.app vs `claude`).
+  // Verify the app actually launched (poll up to 5s) by scanning ps for
+  // processes whose executable resides under the .app bundle path. Bundle-
+  // path matching avoids the case-sensitivity trap where the bundle name
+  // and the executable name differ (e.g. Firefox.app/Contents/MacOS/firefox,
+  // Visual Studio Code.app/Contents/MacOS/Electron) — and avoids matching
+  // unrelated CLI binaries with shared lowercase names.
+  //
+  // Without bundlePath (osascript-only entries), trust `open -a` exit code
+  // since we have no reliable way to verify the launched process.
+  if (!bundlePath) {
+    return true;
+  }
+
   const launchDeadline = Date.now() + 5_000;
   let launched = false;
   while (Date.now() < launchDeadline) {
     await Bun.sleep(500);
-    launched = await isAppRunning(appName);
+    launched = (await pidsInBundle(bundlePath)).length > 0;
     if (launched) break;
   }
 
@@ -147,8 +166,10 @@ function filterLivePids(pids: number[]): number[] {
     try {
       process.kill(pid, 0);
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      // EPERM => process exists but we can't signal it; still alive.
+      // ESRCH (and anything else) => treat as dead.
+      return (err as NodeJS.ErrnoException)?.code === "EPERM";
     }
   });
 }
@@ -164,7 +185,7 @@ async function filterPidsByBundle(
 ): Promise<number[]> {
   if (pids.length === 0) return [];
 
-  const proc = Bun.spawn(["ps", "-o", "pid=,comm=", "-p", ...pids.map(String)], {
+  const proc = Bun.spawn(["ps", "-ww", "-o", "pid=,comm=", "-p", ...pids.map(String)], {
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -185,15 +206,6 @@ async function filterPidsByBundle(
     }
   }
   return verified;
-}
-
-async function isAppRunning(appName: string): Promise<boolean> {
-  const proc = Bun.spawn(["pgrep", "-x", appName], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const exitCode = await proc.exited;
-  return exitCode === 0;
 }
 
 async function restartService(app: DetectedApp): Promise<boolean> {

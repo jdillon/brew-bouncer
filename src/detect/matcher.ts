@@ -120,9 +120,12 @@ export async function detectRunningUpgrades(
       if (matched.length > 0) {
         // Aggregate PIDs across all matched bundles (helpers, multi-window etc)
         const pids = matched.flatMap((m) => m.pids);
-        // Prefer the first matched bundle's path for verification. Cask app
-        // artifacts map 1:1 to a bundle, so multiple matches are unusual.
-        const bundlePath = matched[0]!.bundlePath;
+        // Prefer the first matched bundle that has a path discovered via ps;
+        // osascript-only supplements have no bundlePath and would defeat
+        // bundle-path verification in the restart layer.
+        const bundlePath =
+          matched.find((m) => m.bundlePath !== undefined)?.bundlePath ??
+          matched[0]!.bundlePath;
         detected.push({
           packageName: pkg.name,
           oldVersion: pkg.installedVersions[0] ?? "unknown",

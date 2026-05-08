@@ -22,9 +22,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quit verification and SIGTERM, with a defense-in-depth re-check that
   each PID's executable still resides under the originally-detected
   bundle path before signaling (guards against PID recycling).
-  Launch verification uses case-sensitive `pgrep -x`. Previously,
+  Launch verification scans `ps` for processes under the bundle path
+  rather than matching the bundle name against the executable, which
+  avoids false negatives for apps whose executable case or name differs
+  from the bundle (e.g. `Firefox.app/Contents/MacOS/firefox`,
+  `Visual Studio Code.app/Contents/MacOS/Electron`). Previously,
   restarting `Claude.app` could `pkill -ix Claude` and terminate the
   `claude` CLI binary because `-i` matched both names.
+- When a cask-GUI app is detected only via osascript (ps did not see it,
+  so no PIDs), the post-quit wait now re-scans the bundle path each poll
+  iteration instead of short-circuiting on an empty PID list, ensuring
+  the wait actually observes quitting processes before the app is
+  reopened.
+- Running-app aggregation no longer collapses two installations of the
+  same app at different paths (e.g. `/Applications/Foo.app` and
+  `~/Applications/Foo.app`). The merge previously keyed by lowercase
+  bundle name, which caused the second entry to overwrite the first and
+  drop its PIDs.
+- `filterLivePids` now treats `EPERM` from `process.kill(pid, 0)` as
+  alive (process exists but cannot be signaled by the caller) rather
+  than dead, distinguishing it from `ESRCH`.
+- Bundle-path resolution in cask matching now prefers the first matched
+  entry that has a defined `bundlePath`, falling back to the first match
+  only if none have one. This avoids defeating bundle-path verification
+  when an osascript-only supplement happens to be matched first.
+- `ps` invocations use `-ww` to ensure unlimited output width, guarding
+  against silent path truncation in environments where `ps` output is
+  attached to a narrow terminal.
 - Quarantine handling now covers all executables, not just cask `.app`
   bundles. CLI casks (e.g. `claude-code`), pkg-installed casks, and formula
   binaries previously approved by the user get re-approved after upgrade.

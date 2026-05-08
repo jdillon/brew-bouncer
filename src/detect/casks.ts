@@ -42,23 +42,36 @@ export async function getRunningApps(): Promise<RunningApp[]> {
     gui: guiAppNames.length,
   });
 
-  // Index ps results by lowercase bundleName so osascript can supplement only
-  // entries that ps missed.
-  const byBundle = new Map<string, RunningApp>();
-  for (const app of psApps) {
-    byBundle.set(app.bundleName.toLowerCase(), app);
-  }
-
+  // Preserve every distinct ps entry (one per bundlePath); only suppress
+  // osascript names that already have a ps-discovered counterpart. Keying
+  // by name would collapse same-name installs at different paths
+  // (e.g. /Applications/Foo.app vs ~/Applications/Foo.app).
+  const merged: RunningApp[] = [...psApps];
+  const seenNames = new Set(psApps.map((a) => a.bundleName.toLowerCase()));
   for (const name of guiAppNames) {
     const bundleName = `${name}.app`;
     const key = bundleName.toLowerCase();
-    if (byBundle.has(key)) continue;
-    byBundle.set(key, { name, bundleName, pids: [] });
+    if (seenNames.has(key)) continue;
+    merged.push({ name, bundleName, pids: [] });
+    seenNames.add(key);
   }
 
-  const merged = [...byBundle.values()];
   log.debug("Running apps after merge: {count}", { count: merged.length });
   return merged;
+}
+
+/**
+ * Return PIDs of all processes whose executable currently lives under the
+ * given .app bundle path. Used for restart-time bundle-path verification
+ * and as a fallback when a cask-gui app was supplemented via osascript
+ * (i.e. detection found the app by name but had no PIDs).
+ */
+export async function pidsInBundle(bundlePath: string): Promise<number[]> {
+  const apps = await getAppsFromProcessList();
+  const prefix = bundlePath.endsWith("/") ? bundlePath : bundlePath + "/";
+  return apps
+    .filter((a) => a.bundlePath !== undefined && (a.bundlePath === bundlePath || a.bundlePath.startsWith(prefix)))
+    .flatMap((a) => a.pids);
 }
 
 async function getGuiAppNames(): Promise<string[]> {
@@ -87,7 +100,7 @@ async function getGuiAppNames(): Promise<string[]> {
  *   /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/...
  */
 async function getAppsFromProcessList(): Promise<RunningApp[]> {
-  const proc = Bun.spawn(["ps", "-A", "-o", "pid=,comm="], {
+  const proc = Bun.spawn(["ps", "-ww", "-A", "-o", "pid=,comm="], {
     stdout: "pipe",
     stderr: "pipe",
   });
