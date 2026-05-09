@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import type { DetectedApp } from "./detect/matcher.ts";
+import { pidsInBundle } from "./detect/casks.ts";
 import { exec } from "./brew/runner.ts";
 import { log } from "./logger.ts";
 
@@ -31,6 +32,8 @@ export async function restartApp(app: DetectedApp): Promise<boolean> {
 
 async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   const appName = app.displayName.replace(/\.app$/, "");
+  const detectedPids = app.pids;
+  const bundlePath = app.bundlePath;
 
   // Quit the app gracefully via AppleScript
   log.debug("Quitting app: {app}", { app: appName });
@@ -40,35 +43,79 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   );
   await quit.exited;
 
-  // Poll until the app process is actually gone (up to 10s)
+  // Poll until the originally-detected PIDs are gone (up to 10s).
+  // Using PIDs (not name match) avoids killing unrelated processes that share
+  // a case-insensitive name (e.g. Claude.app vs the `claude` CLI).
+  //
+  // When detectedPids is empty (e.g. cask app was supplemented via osascript
+  // and ps didn't see it), re-scan by bundlePath each iteration so the wait
+  // actually observes quitting processes instead of short-circuiting.
   const quitDeadline = Date.now() + 10_000;
-  let isRunning = true;
+  let livePids = detectedPids;
   while (Date.now() < quitDeadline) {
-    isRunning = await isAppRunning(appName);
-    if (!isRunning) break;
+    // When detection didn't capture any PIDs (osascript-only entry),
+    // re-scan the bundle every iteration. Switching to filterLivePids
+    // after the first non-empty scan would mean we only follow that
+    // initial PID set, missing later-spawned processes in the same
+    // bundle and breaking the loop early.
+    livePids =
+      detectedPids.length === 0 && bundlePath
+        ? await pidsInBundle(bundlePath)
+        : filterLivePids(livePids);
+    if (livePids.length === 0) break;
     await Bun.sleep(500);
   }
 
-  // Escalate: if still running after graceful quit, send SIGTERM via pkill
-  if (isRunning) {
-    log.debug("Graceful quit timed out for {app}, sending SIGTERM", { app: appName });
-    const kill = Bun.spawn(["pkill", "-ix", appName], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    await kill.exited;
+  // Escalate: SIGTERM only the specific surviving PIDs we detected.
+  // Defense-in-depth: if we know the .app bundle path, re-verify each PID's
+  // current executable still lives inside that bundle. PIDs can be recycled
+  // between detection and restart, so a stale PID could now belong to an
+  // unrelated process. Skip any PID whose exec path no longer matches.
+  if (livePids.length > 0) {
+    const verified = bundlePath
+      ? await filterPidsByBundle(livePids, bundlePath)
+      : livePids;
 
-    // Wait up to 5 more seconds for forced quit
-    const killDeadline = Date.now() + 5_000;
-    while (Date.now() < killDeadline) {
-      isRunning = await isAppRunning(appName);
-      if (!isRunning) break;
-      await Bun.sleep(500);
+    const skipped = livePids.filter((p) => !verified.includes(p));
+    if (skipped.length > 0) {
+      log.warn(
+        "Skipping SIGTERM for {count} pids no longer in bundle {bundle}: {pids}",
+        {
+          count: skipped.length,
+          bundle: bundlePath ?? "<unknown>",
+          pids: skipped.join(","),
+        }
+      );
     }
 
-    if (isRunning) {
-      log.error("App {app} did not quit after SIGTERM", { app: appName });
-      return false;
+    if (verified.length > 0) {
+      log.debug("Graceful quit timed out for {app}, sending SIGTERM to {pids}", {
+        app: appName,
+        pids: verified.join(","),
+      });
+      for (const pid of verified) {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {
+          // Process may have just exited — ignore
+        }
+      }
+
+      const killDeadline = Date.now() + 5_000;
+      let stillLive = verified;
+      while (Date.now() < killDeadline) {
+        stillLive = filterLivePids(stillLive);
+        if (stillLive.length === 0) break;
+        await Bun.sleep(500);
+      }
+
+      if (stillLive.length > 0) {
+        log.error("App {app} did not quit after SIGTERM (pids {pids})", {
+          app: appName,
+          pids: stillLive.join(","),
+        });
+        return false;
+      }
     }
   }
 
@@ -89,12 +136,24 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
     return false;
   }
 
-  // Verify the app actually launched (poll up to 5s)
+  // Verify the app actually launched (poll up to 5s) by scanning ps for
+  // processes whose executable resides under the .app bundle path. Bundle-
+  // path matching avoids the case-sensitivity trap where the bundle name
+  // and the executable name differ (e.g. Firefox.app/Contents/MacOS/firefox,
+  // Visual Studio Code.app/Contents/MacOS/Electron) — and avoids matching
+  // unrelated CLI binaries with shared lowercase names.
+  //
+  // Without bundlePath (osascript-only entries), trust `open -a` exit code
+  // since we have no reliable way to verify the launched process.
+  if (!bundlePath) {
+    return true;
+  }
+
   const launchDeadline = Date.now() + 5_000;
   let launched = false;
   while (Date.now() < launchDeadline) {
     await Bun.sleep(500);
-    launched = await isAppRunning(appName);
+    launched = (await pidsInBundle(bundlePath)).length > 0;
     if (launched) break;
   }
 
@@ -106,13 +165,51 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   return true;
 }
 
-async function isAppRunning(appName: string): Promise<boolean> {
-  const proc = Bun.spawn(["pgrep", "-ix", appName], {
+function filterLivePids(pids: number[]): number[] {
+  return pids.filter((pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      // EPERM => process exists but we can't signal it; still alive.
+      // ESRCH (and anything else) => treat as dead.
+      return (err as NodeJS.ErrnoException)?.code === "EPERM";
+    }
+  });
+}
+
+/**
+ * Return only the PIDs whose executable path currently resides under the
+ * given .app bundle. Guards against PID recycling between detection and
+ * restart — a stale PID could otherwise SIGTERM an unrelated process.
+ */
+async function filterPidsByBundle(
+  pids: number[],
+  bundlePath: string,
+): Promise<number[]> {
+  if (pids.length === 0) return [];
+
+  const proc = Bun.spawn(["ps", "-ww", "-o", "pid=,comm=", "-p", ...pids.map(String)], {
     stdout: "pipe",
     stderr: "pipe",
   });
-  const exitCode = await proc.exited;
-  return exitCode === 0;
+  const stdout = await new Response(proc.stdout).text();
+  await proc.exited;
+
+  const prefix = bundlePath.endsWith("/") ? bundlePath : bundlePath + "/";
+  const verified: number[] = [];
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const spaceIdx = trimmed.indexOf(" ");
+    if (spaceIdx === -1) continue;
+    const pid = Number.parseInt(trimmed.slice(0, spaceIdx), 10);
+    const command = trimmed.slice(spaceIdx + 1);
+    if (Number.isFinite(pid) && command.startsWith(prefix)) {
+      verified.push(pid);
+    }
+  }
+  return verified;
 }
 
 async function restartService(app: DetectedApp): Promise<boolean> {

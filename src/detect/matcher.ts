@@ -49,6 +49,13 @@ export interface DetectedApp {
   kind: "cask-gui" | "cask-cli" | "formula-cli" | "formula-service";
   displayName: string;
   pids: number[];
+  /**
+   * For cask-gui: absolute path to the .app bundle (when discoverable).
+   * Used by the restart layer to verify a PID belongs to this exact bundle
+   * before sending SIGTERM, preventing collateral damage to unrelated
+   * processes that happen to share a name.
+   */
+  bundlePath?: string;
 }
 
 export type ProgressCallback = (message: string) => void;
@@ -111,13 +118,30 @@ export async function detectRunningUpgrades(
       const matched = matchCaskToRunningApps(appNames, runningApps);
 
       if (matched.length > 0) {
+        // Pick one concrete bundle to restart, then keep only PIDs that
+        // belong to that same bundle. A cask may declare multiple `.app`
+        // artifacts but the restart layer can only target a single
+        // displayName/bundlePath; mixing PIDs from sibling bundles would
+        // cause false timeouts or SIGTERM the wrong processes.
+        // Prefer a match that has a path discovered via ps; osascript-only
+        // supplements have no bundlePath and would defeat bundle-path
+        // verification.
+        const primary =
+          matched.find((m) => m.bundlePath !== undefined) ?? matched[0]!;
+        const sameBundle = matched.filter((m) =>
+          primary.bundlePath
+            ? m.bundlePath === primary.bundlePath
+            : m.bundleName === primary.bundleName
+        );
+        const pids = [...new Set(sameBundle.flatMap((m) => m.pids))];
         detected.push({
           packageName: pkg.name,
           oldVersion: pkg.installedVersions[0] ?? "unknown",
           newVersion: pkg.currentVersion,
           kind: "cask-gui",
-          displayName: matched[0]!.bundleName,
-          pids: [],
+          displayName: primary.bundleName,
+          pids,
+          bundlePath: primary.bundlePath,
         });
         continue;
       }
