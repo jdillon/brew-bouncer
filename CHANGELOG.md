@@ -30,10 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restarting `Claude.app` could `pkill -ix Claude` and terminate the
   `claude` CLI binary because `-i` matched both names.
 - When a cask-GUI app is detected only via osascript (ps did not see it,
-  so no PIDs), the post-quit wait now re-scans the bundle path each poll
-  iteration instead of short-circuiting on an empty PID list, ensuring
-  the wait actually observes quitting processes before the app is
-  reopened.
+  so no PIDs), the post-quit wait now re-scans the bundle path on every
+  poll iteration instead of short-circuiting on an empty PID list or
+  switching to PID-set tracking after the first scan. Without continuous
+  rescanning, processes that spawn or persist after the initial scan
+  were missed and the app could be reopened before fully quitting.
 - Running-app aggregation no longer collapses two installations of the
   same app at different paths (e.g. `/Applications/Foo.app` and
   `~/Applications/Foo.app`). The merge previously keyed by lowercase
@@ -46,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry that has a defined `bundlePath`, falling back to the first match
   only if none have one. This avoids defeating bundle-path verification
   when an osascript-only supplement happens to be matched first.
+- Cask-GUI detection no longer mixes PIDs from sibling `.app` bundles
+  when a cask declares multiple app artifacts. The restart layer can
+  only target one `displayName`/`bundlePath`, so PIDs are now filtered
+  to the primary bundle's set instead of being flattened across every
+  matched bundle. Multi-`.app` casks may need a follow-up to restart
+  each bundle independently.
 - `ps` invocations use `-ww` to ensure unlimited output width, guarding
   against silent path truncation in environments where `ps` output is
   attached to a narrow terminal.

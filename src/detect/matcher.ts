@@ -118,22 +118,30 @@ export async function detectRunningUpgrades(
       const matched = matchCaskToRunningApps(appNames, runningApps);
 
       if (matched.length > 0) {
-        // Aggregate PIDs across all matched bundles (helpers, multi-window etc)
-        const pids = matched.flatMap((m) => m.pids);
-        // Prefer the first matched bundle that has a path discovered via ps;
-        // osascript-only supplements have no bundlePath and would defeat
-        // bundle-path verification in the restart layer.
-        const bundlePath =
-          matched.find((m) => m.bundlePath !== undefined)?.bundlePath ??
-          matched[0]!.bundlePath;
+        // Pick one concrete bundle to restart, then keep only PIDs that
+        // belong to that same bundle. A cask may declare multiple `.app`
+        // artifacts but the restart layer can only target a single
+        // displayName/bundlePath; mixing PIDs from sibling bundles would
+        // cause false timeouts or SIGTERM the wrong processes.
+        // Prefer a match that has a path discovered via ps; osascript-only
+        // supplements have no bundlePath and would defeat bundle-path
+        // verification.
+        const primary =
+          matched.find((m) => m.bundlePath !== undefined) ?? matched[0]!;
+        const sameBundle = matched.filter((m) =>
+          primary.bundlePath
+            ? m.bundlePath === primary.bundlePath
+            : m.bundleName === primary.bundleName
+        );
+        const pids = [...new Set(sameBundle.flatMap((m) => m.pids))];
         detected.push({
           packageName: pkg.name,
           oldVersion: pkg.installedVersions[0] ?? "unknown",
           newVersion: pkg.currentVersion,
           kind: "cask-gui",
-          displayName: matched[0]!.bundleName,
+          displayName: primary.bundleName,
           pids,
-          bundlePath,
+          bundlePath: primary.bundlePath,
         });
         continue;
       }

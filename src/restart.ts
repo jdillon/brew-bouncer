@@ -53,11 +53,15 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
   const quitDeadline = Date.now() + 10_000;
   let livePids = detectedPids;
   while (Date.now() < quitDeadline) {
-    if (livePids.length === 0 && detectedPids.length === 0 && bundlePath) {
-      livePids = await pidsInBundle(bundlePath);
-    } else {
-      livePids = filterLivePids(livePids);
-    }
+    // When detection didn't capture any PIDs (osascript-only entry),
+    // re-scan the bundle every iteration. Switching to filterLivePids
+    // after the first non-empty scan would mean we only follow that
+    // initial PID set, missing later-spawned processes in the same
+    // bundle and breaking the loop early.
+    livePids =
+      detectedPids.length === 0 && bundlePath
+        ? await pidsInBundle(bundlePath)
+        : filterLivePids(livePids);
     if (livePids.length === 0) break;
     await Bun.sleep(500);
   }
