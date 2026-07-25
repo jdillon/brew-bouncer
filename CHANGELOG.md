@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-25
+
+### Added
+
+- Config file is now YAML at `~/.config/brew-bouncer/config.yaml`.
+  `config.json` still works as a deprecated fallback; startup fails fast
+  on parse errors or if both files exist.
+- Configurable prompt defaults (`promptDefaults`) for the upgrade,
+  restart, and quarantine prompts.
+- Summary of brew warnings and errors after an upgrade run.
+
 ### Changed
 
 - Homebrew paths are now resolved at runtime via `src/brew/paths.ts`
@@ -16,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Quarantine is now detected after each package upgrades instead of from
+  a pre-upgrade approval snapshot. Casks whose binaries always ship
+  quarantined (e.g. `claude-code`) were never in the approved list, so
+  every upgrade left them quarantined.
+- GUI app restart polls for actual quit instead of sleeping a fixed
+  1500ms, escalates to SIGTERM after 10s, and verifies the app relaunched.
 - GUI app restart no longer kills unrelated CLI processes that share a
   case-insensitive name. Cask-GUI detection now captures PIDs and the
   `.app` bundle path via `ps`. Restart targets those specific PIDs for
