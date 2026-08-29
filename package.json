@@ -1,6 +1,6 @@
 {
   "name": "brew-bouncer",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "license": "Apache-2.0",
   "module": "src/index.ts",
   "type": "module",
