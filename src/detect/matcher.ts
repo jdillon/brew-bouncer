@@ -33,7 +33,8 @@ import {
 } from "./casks.ts";
 import {
   getRunningProcesses,
-  extractFormulaBinaries,
+  extractKegPrefixes,
+  matchBinaryNamesToRunningProcesses,
   matchFormulaToRunningProcesses,
   matchFormulaToRunningServices,
 } from "./formulae.ts";
@@ -156,7 +157,7 @@ export async function detectRunningUpgrades(
         });
       }
       if (binaryNames.length > 0) {
-        const binMatched = matchFormulaToRunningProcesses(
+        const binMatched = matchBinaryNamesToRunningProcesses(
           binaryNames,
           runningProcesses
         );
@@ -199,9 +200,9 @@ export async function detectRunningUpgrades(
         const listResult = await brewList(pkg.name);
         if (listResult.exitCode !== 0) return null;
 
-        const binaries = extractFormulaBinaries(listResult.stdout);
+        const kegPrefixes = extractKegPrefixes(listResult.stdout);
         const matched = matchFormulaToRunningProcesses(
-          binaries,
+          kegPrefixes,
           runningProcesses
         );
 

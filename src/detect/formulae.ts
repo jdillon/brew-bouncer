@@ -50,16 +50,71 @@ export async function getRunningProcesses(): Promise<RunningProcess[]> {
     .filter((p): p is RunningProcess => p !== null);
 }
 
-export function extractFormulaBinaries(brewListOutput: string): string[] {
-  return brewListOutput
-    .trim()
-    .split("\n")
-    .filter((line) => /\/(s?bin)\//.test(line))
-    .map((line) => line.trim().split("/").pop() ?? "")
-    .filter(Boolean);
+const KEG_ROOT = /^(.*\/Cellar\/[^/]+\/[^/]+)\//;
+
+/**
+ * Reduce `brew list <formula>` output to the keg roots it covers, e.g.
+ * "/opt/homebrew/Cellar/awscli/2.36.33_1/". A formula with several installed
+ * versions yields one prefix per keg.
+ */
+export function extractKegPrefixes(brewListOutput: string): string[] {
+  const prefixes = new Set<string>();
+
+  for (const line of brewListOutput.trim().split("\n")) {
+    const match = KEG_ROOT.exec(line.trim());
+    if (match) prefixes.add(`${match[1]}/`);
+  }
+
+  return [...prefixes];
 }
 
+/**
+ * Match processes running from inside a formula's keg.
+ *
+ * Matching on the full executable path rather than its basename: `ps` reports
+ * the resolved real path, so anything launched through Homebrew's bin symlinks
+ * still lands under the keg. Basename matching claimed unrelated processes —
+ * awscli vendors libexec/bin/python, which matched any running python.
+ *
+ * Prefix (not exact path) because plenty of formulae run from outside the keg's
+ * top-level bin: moon from libexec/bin, python@3.14 from Frameworks.
+ */
 export function matchFormulaToRunningProcesses(
+  kegPrefixes: string[],
+  processes: RunningProcess[]
+): RunningProcess[] {
+  const matched: RunningProcess[] = [];
+  const seen = new Set<number>();
+
+  for (const prefix of kegPrefixes) {
+    let found = false;
+    for (const proc of processes) {
+      if (proc.command.startsWith(prefix) && !seen.has(proc.pid)) {
+        log.debug("Keg {prefix} matched PID {pid} ({command})", {
+          prefix,
+          pid: proc.pid,
+          command: proc.command,
+        });
+        matched.push(proc);
+        seen.add(proc.pid);
+        found = true;
+      }
+    }
+    if (!found) {
+      log.debug("Keg {prefix} has nothing running", { prefix });
+    }
+  }
+
+  return matched;
+}
+
+/**
+ * Match processes by executable basename. Used for cask binary artifacts, which
+ * symlink into the Caskroom rather than a keg, so there is no path prefix to
+ * scope by. Looser than the formula path above — a same-named process from
+ * elsewhere still matches.
+ */
+export function matchBinaryNamesToRunningProcesses(
   binaries: string[],
   processes: RunningProcess[]
 ): RunningProcess[] {
