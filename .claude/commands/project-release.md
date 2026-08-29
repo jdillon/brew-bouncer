@@ -41,9 +41,9 @@ Read CHANGELOG.md `[Unreleased]` section. Compare commits since last tag.
 - `fix:` that fix bugs users encounter
 
 **Skip:**
-- `docs:`, `ci:`, `test:`, `bd:`, `chore:` commits
-- Changes in `.claude/`, `.github/`, `scripts/`, `docs/`, `.beads/`
-- Commits already in changelog (matching bead ID)
+- `docs:`, `ci:`, `test:`, `chore:` commits
+- Changes in `.claude/`, `.github/`, `scripts/`, `docs/`
+- Commits already in changelog
 
 If user-facing changes missing from changelog: **STOP** and ask user to update.
 

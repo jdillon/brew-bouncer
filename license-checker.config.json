@@ -7,7 +7,6 @@
     ".DS_Store",
     ".gitignore",
     ".gitattributes",
-    ".beads/**/*",
     ".claude/**/*",
     ".idea/**/*",
     "node_modules/**/*",
