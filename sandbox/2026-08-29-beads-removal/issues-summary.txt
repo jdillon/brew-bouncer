@@ -1,0 +1,12 @@
+brew-bouncer-b0r	in_progress	[bug p2]	Quarantine handling only covers GUI apps, needs to cover all executables
+brew-bouncer-1vu	in_progress	[task p2]	Homebrew distribution: deliver bun-based CLI as bottle
+brew-bouncer-1i9	open	[bug p2]	Caveat extraction from brew output stream is broken
+brew-bouncer-d93	open	[feature p1]	Sequential per-package upgrade with inline restart prompts
+brew-bouncer-lmy	open	[feature p2]	Add commands to manage the ignore list
+brew-bouncer-8ut	open	[feature p3]	Add per-package pre/post-upgrade hooks
+brew-bouncer-a9r	open	[feature p3]	brew-barback: Full TUI for Homebrew management
+brew-bouncer-b20	open	[feature p3]	Implement standalone restart command
+brew-bouncer-67l	open	[task p2]	Generate native binary with bun build --compile
+brew-bouncer-5p1	open	[task p2]	Investigate test coverage opportunities
+brew-bouncer-1d3	open	[task p2]	Restart each .app bundle independently for multi-.app casks
+brew-bouncer-cbn	open	[task p2]	Restart each .app bundle independently for multi-.app casks
