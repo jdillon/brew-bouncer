@@ -13,10 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   extractKegPrefixes,
   matchFormulaToRunningProcesses,
+  realPath,
   type RunningProcess,
 } from "./formulae.ts";
 
@@ -28,8 +32,14 @@ const AWSCLI_LIST = `
 /opt/homebrew/Cellar/awscli/2.36.33_1/libexec/bin/python3.14
 `;
 
+/** A process as `ps` reports it: `command` is the path used to invoke it. */
 function proc(pid: number, command: string): RunningProcess {
-  return { pid, command, name: command.split("/").pop() ?? command };
+  return {
+    pid,
+    command,
+    name: command.split("/").pop() ?? command,
+    path: realPath(command),
+  };
 }
 
 test("extractKegPrefixes collapses a file list to its keg root", () => {
@@ -71,6 +81,15 @@ test("a process running from libexec inside the keg matches", () => {
   expect(matched.map((p) => p.pid)).toEqual([65986]);
 });
 
+test("a sibling keg with a longer version string does not match", () => {
+  const processes = [proc(1, "/opt/homebrew/Cellar/node/26.7.0.1/bin/node")];
+  const matched = matchFormulaToRunningProcesses(
+    ["/opt/homebrew/Cellar/node/26.7.0/"],
+    processes
+  );
+  expect(matched).toEqual([]);
+});
+
 test("a pid matching two prefixes is only reported once", () => {
   const processes = [proc(1, "/opt/homebrew/Cellar/node/26.7.0/bin/node")];
   const matched = matchFormulaToRunningProcesses(
@@ -78,4 +97,29 @@ test("a pid matching two prefixes is only reported once", () => {
     processes
   );
   expect(matched).toHaveLength(1);
+});
+
+// `ps` reports the path a process was invoked with, and Homebrew's bin holds
+// symlinks — so `node` started from PATH shows /opt/homebrew/bin/node, not the
+// keg path. Matching has to resolve symlinks or it misses every such process.
+test("a process launched through a bin symlink matches its keg", () => {
+  const root = mkdtempSync(join(tmpdir(), "brew-bouncer-test-"));
+  const kegBin = join(root, "Cellar", "node", "26.7.0", "bin");
+  mkdirSync(kegBin, { recursive: true });
+  writeFileSync(join(kegBin, "node"), "");
+  mkdirSync(join(root, "bin"));
+  symlinkSync(join(kegBin, "node"), join(root, "bin", "node"));
+  cleanups.push(root);
+
+  const processes = [proc(4242, join(root, "bin", "node"))];
+  const matched = matchFormulaToRunningProcesses(
+    [join(root, "Cellar", "node", "26.7.0") + "/"],
+    processes
+  );
+  expect(matched.map((p) => p.pid)).toEqual([4242]);
+});
+
+const cleanups: string[] = [];
+afterAll(() => {
+  for (const dir of cleanups) rmSync(dir, { recursive: true, force: true });
 });

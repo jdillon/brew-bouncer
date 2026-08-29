@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { realpathSync } from "node:fs";
 import { getLogger } from "@logtape/logtape";
 
 const log = getLogger(["brew-bouncer", "detect", "formulae"]);
@@ -20,7 +21,23 @@ const log = getLogger(["brew-bouncer", "detect", "formulae"]);
 export interface RunningProcess {
   pid: number;
   name: string;
+  /** Executable path as `ps` reports it — how the process was invoked */
   command: string;
+  /**
+   * `command` with symlinks resolved. Homebrew puts symlinks in its bin
+   * directory, and `ps` reports the path as invoked, so a formula started
+   * from PATH shows /opt/homebrew/bin/node, not the keg path it points at.
+   */
+  path: string;
+}
+
+/** Resolve symlinks, falling back to the input when the path is gone or unreadable. */
+export function realPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
 }
 
 export async function getRunningProcesses(): Promise<RunningProcess[]> {
@@ -45,7 +62,7 @@ export async function getRunningProcesses(): Promise<RunningProcess[]> {
       // Extract just the binary name from the full path
       const name = command.split("/").pop() ?? command;
 
-      return { pid, name, command };
+      return { pid, name, command, path: realPath(command) };
     })
     .filter((p): p is RunningProcess => p !== null);
 }
@@ -71,10 +88,11 @@ export function extractKegPrefixes(brewListOutput: string): string[] {
 /**
  * Match processes running from inside a formula's keg.
  *
- * Matching on the full executable path rather than its basename: `ps` reports
- * the resolved real path, so anything launched through Homebrew's bin symlinks
- * still lands under the keg. Basename matching claimed unrelated processes —
- * awscli vendors libexec/bin/python, which matched any running python.
+ * Matching on the full executable path rather than its basename: basename
+ * matching claimed unrelated processes — awscli vendors libexec/bin/python,
+ * which matched any running python. Both sides are symlink-resolved, since
+ * `ps` reports how the process was invoked (usually via Homebrew's bin
+ * symlink) rather than the keg path underneath.
  *
  * Prefix (not exact path) because plenty of formulae run from outside the keg's
  * top-level bin: moon from libexec/bin, python@3.14 from Frameworks.
@@ -86,10 +104,13 @@ export function matchFormulaToRunningProcesses(
   const matched: RunningProcess[] = [];
   const seen = new Set<number>();
 
-  for (const prefix of kegPrefixes) {
+  for (const kegPrefix of kegPrefixes) {
+    // Trailing slash survives realpath only if the directory exists; keep it
+    // either way so /Cellar/node/1.0/ can't prefix-match /Cellar/node/1.0.1/.
+    const prefix = `${realPath(kegPrefix).replace(/\/$/, "")}/`;
     let found = false;
     for (const proc of processes) {
-      if (proc.command.startsWith(prefix) && !seen.has(proc.pid)) {
+      if (proc.path.startsWith(prefix) && !seen.has(proc.pid)) {
         log.debug("Keg {prefix} matched PID {pid} ({command})", {
           prefix,
           pid: proc.pid,

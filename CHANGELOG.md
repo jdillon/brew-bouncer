@@ -13,8 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shares a binary name. Detection now matches processes by their keg path
   (`/opt/homebrew/Cellar/<name>/<version>/`) instead of comparing basenames,
   so `awscli` is no longer flagged by any running `python` — it vendors
-  `libexec/bin/python`. Processes running from a keg's `libexec` or
-  `Frameworks` are still detected.
+  `libexec/bin/python`. Paths are symlink-resolved, so a formula started from
+  `PATH` (which `ps` reports as `/opt/homebrew/bin/<name>`) still matches, and
+  processes running from a keg's `libexec` or `Frameworks` are detected too.
 
 ## [0.3.0] - 2026-07-25
 
