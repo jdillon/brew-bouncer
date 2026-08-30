@@ -105,34 +105,46 @@ export async function brewServicesList(): Promise<ExecResult> {
   return exec(["services", "list"]);
 }
 
-/**
- * Query macOS pkg receipt for installed files.
- * Returns top-level .app bundle names found in the receipt.
- */
-export async function pkgutilAppNames(pkgId: string): Promise<string[]> {
+/** Query a macOS package receipt for every installed path. */
+export async function pkgutilFiles(pkgId: string): Promise<string[]> {
   log.debug("pkgutil --files {pkgId}", { pkgId });
 
-  const proc = Bun.spawn(["pkgutil", "--files", pkgId], {
+  const filesProc = Bun.spawn(["pkgutil", "--files", pkgId], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const infoProc = Bun.spawn(["pkgutil", "--pkg-info", pkgId], {
     stdout: "pipe",
     stderr: "pipe",
   });
 
-  const stdout = await new Response(proc.stdout).text();
-  const exitCode = await proc.exited;
+  const [stdout, info, exitCode, infoExitCode] = await Promise.all([
+    new Response(filesProc.stdout).text(),
+    new Response(infoProc.stdout).text(),
+    filesProc.exited,
+    infoProc.exited,
+  ]);
 
   if (exitCode !== 0) {
     log.debug("pkgutil {pkgId} failed (exit {exitCode})", { pkgId, exitCode });
     return [];
   }
 
-  // Find top-level .app entries (e.g., "zoom.us.app" not nested ones)
-  const apps: string[] = [];
-  for (const line of stdout.trim().split("\n")) {
-    if (/^[^/]+\.app$/.test(line)) {
-      apps.push(line);
-    }
-  }
-
-  log.debug("pkgutil {pkgId}: found {apps}", { pkgId, apps: apps.join(", ") || "none" });
-  return apps;
+  const fields = new Map(
+    info.trim().split("\n").map((line) => {
+      const separator = line.indexOf(":");
+      return separator === -1
+        ? [line, ""]
+        : [line.slice(0, separator), line.slice(separator + 1).trim()];
+    })
+  );
+  const volume = infoExitCode === 0 ? fields.get("volume") || "/" : "/";
+  const location = infoExitCode === 0 ? fields.get("location") || "" : "";
+  const base = `${volume.replace(/\/+$/, "")}/${location.replace(/^\/+|\/+$/g, "")}`
+    .replace(/\/+$/, "");
+  const files = stdout.trim().split("\n").filter(Boolean).map((file) =>
+    file.startsWith("/") ? file : `${base}/${file}`
+  );
+  log.debug("pkgutil {pkgId}: found {count} files", { pkgId, count: files.length });
+  return files;
 }

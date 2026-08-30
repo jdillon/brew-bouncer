@@ -21,7 +21,8 @@ import { log } from "./logger.ts";
 export async function restartApp(app: DetectedApp): Promise<boolean> {
   switch (app.kind) {
     case "cask-gui":
-      return restartGuiApp(app);
+      if (!(await quitGuiApp(app))) return false;
+      return reopenGuiApp(app);
     case "formula-service":
       return restartService(app);
     case "cask-cli":
@@ -30,7 +31,7 @@ export async function restartApp(app: DetectedApp): Promise<boolean> {
   }
 }
 
-async function restartGuiApp(app: DetectedApp): Promise<boolean> {
+export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
   const appName = app.displayName.replace(/\.app$/, "");
   const detectedPids = app.pids;
   const bundlePath = app.bundlePath;
@@ -119,15 +120,25 @@ async function restartGuiApp(app: DetectedApp): Promise<boolean> {
     }
   }
 
-  // Brief settle after quit before reopening
+  // Let macOS release the old bundle before Homebrew replaces it.
   await Bun.sleep(500);
+
+  return true;
+}
+
+export async function reopenGuiApp(app: DetectedApp): Promise<boolean> {
+  const appName = app.displayName.replace(/\.app$/, "");
+  const bundlePath = app.bundlePath;
 
   // Reopen the app
   log.debug("Reopening app: {app}", { app: appName });
-  const open = Bun.spawn(["open", "-a", appName], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const open = Bun.spawn(
+    bundlePath ? ["open", bundlePath] : ["open", "-a", appName],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+    }
+  );
   const exitCode = await open.exited;
 
   if (exitCode !== 0) {

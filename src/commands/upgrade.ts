@@ -21,7 +21,7 @@ import {
   detectInstallerManualCasks,
 } from "../brew/parser.ts";
 import { detectRunningUpgrades, type DetectedApp } from "../detect/matcher.ts";
-import { restartApp } from "../restart.ts";
+import { quitGuiApp, reopenGuiApp, restartApp } from "../restart.ts";
 import { confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart, confirmQuarantinePolicy, confirmUnquarantine, type PolicyChoice, type RestartPolicy } from "../prompt.ts";
 import { enumeratePackageExecutables, isQuarantined, removeQuarantine } from "../quarantine.ts";
 import { loadConfig } from "../config.ts";
@@ -222,7 +222,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
 
   console.log("");
 
-  // Step 8: Upgrade packages one at a time, restarting affected apps immediately
+  // Step 8: Upgrade packages one at a time, safely restarting affected apps
   console.log(chalk.bold("Upgrading...\n"));
 
   let failCount = 0;
@@ -240,11 +240,42 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
         chalk.dim(` ${pkg.installedVersions[0]} → ${pkg.currentVersion}`)
     );
 
+    const app = detectedMap.get(pkg.name);
+    let restartRequested = false;
+    if (app && !isManualRestartOnly(app) && restartPolicy !== "no") {
+      if (restartAll) {
+        restartRequested = true;
+      } else {
+        const choice = await confirmRestart(app.displayName);
+        if (choice === "all") {
+          restartAll = true;
+          restartRequested = true;
+        } else {
+          restartRequested = choice === "yes";
+        }
+      }
+    }
+
+    // Replacing a live .app can make macOS report an unexpected quit. For
+    // opted-in restarts, stop it cleanly before Homebrew touches the bundle.
+    let stoppedBeforeUpgrade = false;
+    if (restartRequested && app?.kind === "cask-gui") {
+      stoppedBeforeUpgrade = await doQuit(app);
+      if (!stoppedBeforeUpgrade) {
+        failCount++;
+        console.log(chalk.yellow("  Upgrade skipped because the app did not quit"));
+        await doReopen(app);
+        console.log("");
+        continue;
+      }
+    }
+
     const result = await brewUpgrade(pkg.name);
     diagnostics.push(...collectUpgradeDiagnostics(pkg.name, result.stdout, result.stderr));
 
     if (result.exitCode !== 0) {
       failCount++;
+      if (stoppedBeforeUpgrade && app) await doReopen(app);
       console.log("");
       continue;
     }
@@ -272,7 +303,6 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     }
 
     // Restart immediately if this package had a running process
-    const app = detectedMap.get(pkg.name);
     if (app) {
       if (isManualRestartOnly(app)) {
         const pids = app.pids.length > 0 ? ` (PID ${app.pids.join(", ")})` : "";
@@ -280,23 +310,14 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
         manualRestartCount++;
       } else if (restartPolicy === "no") {
         restartSkippedCount++;
-      } else if (restartAll) {
-        const ok = await doRestart(app);
+      } else if (restartRequested) {
+        const ok = stoppedBeforeUpgrade
+          ? await doReopen(app)
+          : await doRestart(app);
         if (ok) restartedCount++;
       } else {
-        // restartPolicy === "ask"
-        const choice = await confirmRestart(app.displayName);
-        if (choice === "all") {
-          restartAll = true;
-          const ok = await doRestart(app);
-          if (ok) restartedCount++;
-        } else if (choice === "yes") {
-          const ok = await doRestart(app);
-          if (ok) restartedCount++;
-        } else {
-          console.log(chalk.dim(`  Skipped ${app.displayName}`));
-          restartSkippedCount++;
-        }
+        console.log(chalk.dim(`  Skipped ${app.displayName}`));
+        restartSkippedCount++;
       }
     }
 
@@ -325,6 +346,20 @@ function isManualRestartOnly(app: DetectedApp): boolean {
 async function doRestart(app: DetectedApp): Promise<boolean> {
   process.stdout.write(`  ${chalk.cyan("⟳")} Restarting ${chalk.bold(app.displayName)}... `);
   const ok = await restartApp(app);
+  console.log(ok ? chalk.green("done") : chalk.red("failed"));
+  return ok;
+}
+
+async function doQuit(app: DetectedApp): Promise<boolean> {
+  process.stdout.write(`  ${chalk.cyan("⟳")} Quitting ${chalk.bold(app.displayName)}... `);
+  const ok = await quitGuiApp(app);
+  console.log(ok ? chalk.green("done") : chalk.red("failed"));
+  return ok;
+}
+
+async function doReopen(app: DetectedApp): Promise<boolean> {
+  process.stdout.write(`  ${chalk.cyan("⟳")} Reopening ${chalk.bold(app.displayName)}... `);
+  const ok = await reopenGuiApp(app);
   console.log(ok ? chalk.green("done") : chalk.red("failed"));
   return ok;
 }
