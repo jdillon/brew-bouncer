@@ -42,7 +42,24 @@ export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
     ["osascript", "-e", `tell application "${appName}" to quit`],
     { stdout: "pipe", stderr: "pipe" }
   );
-  await quit.exited;
+  const [, stderr, exitCode] = await Promise.all([
+    new Response(quit.stdout).text(),
+    new Response(quit.stderr).text(),
+    quit.exited,
+  ]);
+
+  if (exitCode !== 0) {
+    log.error("Failed to request graceful quit for {app}: {stderr}", {
+      app: appName,
+      stderr: stderr.trim(),
+    });
+    return false;
+  }
+
+  if (detectedPids.length === 0 && !bundlePath) {
+    log.error("Cannot verify that app {app} quit", { app: appName });
+    return false;
+  }
 
   // Poll until the originally-detected PIDs are gone (up to 10s).
   // Using PIDs (not name match) avoids killing unrelated processes that share
