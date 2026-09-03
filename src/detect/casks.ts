@@ -74,6 +74,77 @@ export async function pidsInBundle(bundlePath: string): Promise<number[]> {
     .flatMap((a) => a.pids);
 }
 
+/** Resolve the bundle's declared main executable path, when it has one. */
+export async function resolveBundleMainExecutable(
+  bundlePath: string,
+): Promise<string | undefined> {
+  const plistPath = `${bundlePath}/Contents/Info.plist`;
+  const plist = Bun.spawn(
+    ["plutil", "-extract", "CFBundleExecutable", "raw", "-o", "-", plistPath],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const [executableName, stderr, exitCode] = await Promise.all([
+    new Response(plist.stdout).text(),
+    new Response(plist.stderr).text(),
+    plist.exited,
+  ]);
+  if (exitCode !== 0 || !executableName.trim()) {
+    log.debug("Cannot resolve main executable for {bundle}: {stderr}", {
+      bundle: bundlePath,
+      stderr: stderr.trim() || `plutil exited ${exitCode}`,
+    });
+    return undefined;
+  }
+
+  return `${bundlePath}/Contents/MacOS/${executableName.trim()}`;
+}
+
+/** Return non-zombie PIDs running one exact executable path. */
+export async function pidsForExecutable(executablePath: string): Promise<number[]> {
+  const processes = Bun.spawn(["ps", "-ww", "-A", "-o", "pid=,state=,comm="], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(processes.stdout).text(),
+    new Response(processes.stderr).text(),
+    processes.exited,
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`ps failed while checking ${executablePath}: ${stderr.trim()}`);
+  }
+
+  return parsePidsForExecutable(stdout, executablePath);
+}
+
+export function parsePidsForExecutable(
+  processList: string,
+  executablePath: string,
+): number[] {
+  const pids: number[] = [];
+
+  for (const line of processList.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const match = trimmed.match(/^(\d+)\s+(\S+)\s+(.+)$/);
+    if (!match) continue;
+
+    const pid = Number.parseInt(match[1]!, 10);
+    const state = match[2]!;
+    const command = match[3]!;
+    if (
+      Number.isFinite(pid) &&
+      !state.startsWith("Z") &&
+      command === executablePath
+    ) {
+      pids.push(pid);
+    }
+  }
+
+  return pids;
+}
+
 async function getGuiAppNames(): Promise<string[]> {
   const proc = Bun.spawn(
     [
@@ -105,8 +176,14 @@ async function getAppsFromProcessList(): Promise<RunningApp[]> {
     stderr: "pipe",
   });
 
-  const stdout = await new Response(proc.stdout).text();
-  await proc.exited;
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`ps failed while scanning app bundles: ${stderr.trim()}`);
+  }
 
   // Capture only the *outermost* .app bundle. A path like
   //   /Applications/Foo.app/Contents/Frameworks/Foo Helper.app/Contents/MacOS/...

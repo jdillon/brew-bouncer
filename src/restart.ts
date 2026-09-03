@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 import type { DetectedApp } from "./detect/matcher.ts";
-import { pidsInBundle } from "./detect/casks.ts";
+import {
+  pidsForExecutable,
+  pidsInBundle,
+  resolveBundleMainExecutable,
+} from "./detect/casks.ts";
 import { exec } from "./brew/runner.ts";
 import { log } from "./logger.ts";
 
@@ -35,6 +39,17 @@ export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
   const appName = app.displayName.replace(/\.app$/, "");
   const detectedPids = app.pids;
   const bundlePath = app.bundlePath;
+
+  let scanner: GuiProcessScanner;
+  try {
+    scanner = await createGuiProcessScanner(detectedPids, bundlePath);
+  } catch (error) {
+    log.error("Cannot inspect processes for {app}: {error}", {
+      app: appName,
+      error: errorMessage(error),
+    });
+    return false;
+  }
 
   // Quit the app gracefully via AppleScript
   log.debug("Quitting app: {app}", { app: appName });
@@ -61,25 +76,26 @@ export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
     return false;
   }
 
-  // Poll until the originally-detected PIDs are gone (up to 10s).
-  // Using PIDs (not name match) avoids killing unrelated processes that share
-  // a case-insensitive name (e.g. Claude.app vs the `claude` CLI).
+  // Poll until the app's main executable is gone (up to 10s). Helpers and
+  // launchd-managed XPC services can legitimately outlive a conventional main
+  // process. For nonstandard bundles where a main process cannot be proven,
+  // conservatively retain exact bundle-path tracking instead.
   //
-  // When detectedPids is empty (e.g. cask app was supplemented via osascript
-  // and ps didn't see it), re-scan by bundlePath each iteration so the wait
-  // actually observes quitting processes instead of short-circuiting.
+  // For osascript-only entries with no bundle path, fall back to the original
+  // PID set. Using PIDs (not a name match) avoids killing unrelated processes
+  // that share a case-insensitive name (e.g. Claude.app vs the `claude` CLI).
   const quitDeadline = Date.now() + 10_000;
   let livePids = detectedPids;
   while (Date.now() < quitDeadline) {
-    // When detection didn't capture any PIDs (osascript-only entry),
-    // re-scan the bundle every iteration. Switching to filterLivePids
-    // after the first non-empty scan would mean we only follow that
-    // initial PID set, missing later-spawned processes in the same
-    // bundle and breaking the loop early.
-    livePids =
-      detectedPids.length === 0 && bundlePath
-        ? await pidsInBundle(bundlePath)
-        : filterLivePids(livePids);
+    try {
+      livePids = await scanner.scan();
+    } catch (error) {
+      log.error("Cannot verify that app {app} quit: {error}", {
+        app: appName,
+        error: errorMessage(error),
+      });
+      return false;
+    }
     if (livePids.length === 0) break;
     await Bun.sleep(500);
   }
@@ -90,9 +106,18 @@ export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
   // between detection and restart, so a stale PID could now belong to an
   // unrelated process. Skip any PID whose exec path no longer matches.
   if (livePids.length > 0) {
-    const verified = bundlePath
-      ? await filterPidsByBundle(livePids, bundlePath)
-      : livePids;
+    let verified: number[];
+    try {
+      verified = bundlePath
+        ? await filterPidsByBundle(livePids, bundlePath)
+        : livePids;
+    } catch (error) {
+      log.error("Cannot verify processes before stopping app {app}: {error}", {
+        app: appName,
+        error: errorMessage(error),
+      });
+      return false;
+    }
 
     const skipped = livePids.filter((p) => !verified.includes(p));
     if (skipped.length > 0) {
@@ -122,7 +147,15 @@ export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
       const killDeadline = Date.now() + 5_000;
       let stillLive = verified;
       while (Date.now() < killDeadline) {
-        stillLive = filterLivePids(stillLive);
+        try {
+          stillLive = await scanner.scan();
+        } catch (error) {
+          log.error("Cannot verify that app {app} quit after SIGTERM: {error}", {
+            app: appName,
+            error: errorMessage(error),
+          });
+          return false;
+        }
         if (stillLive.length === 0) break;
         await Bun.sleep(500);
       }
@@ -147,6 +180,22 @@ export async function reopenGuiApp(app: DetectedApp): Promise<boolean> {
   const appName = app.displayName.replace(/\.app$/, "");
   const bundlePath = app.bundlePath;
 
+  let scanLaunched: (() => Promise<number[]>) | undefined;
+  if (bundlePath) {
+    try {
+      const mainExecutable = await resolveBundleMainExecutable(bundlePath);
+      scanLaunched = mainExecutable
+        ? () => pidsForExecutable(mainExecutable)
+        : () => pidsInBundle(bundlePath);
+    } catch (error) {
+      log.error("Cannot prepare launch verification for {app}: {error}", {
+        app: appName,
+        error: errorMessage(error),
+      });
+      return false;
+    }
+  }
+
   // Reopen the app
   log.debug("Reopening app: {app}", { app: appName });
   const open = Bun.spawn(
@@ -164,12 +213,10 @@ export async function reopenGuiApp(app: DetectedApp): Promise<boolean> {
     return false;
   }
 
-  // Verify the app actually launched (poll up to 5s) by scanning ps for
-  // processes whose executable resides under the .app bundle path. Bundle-
-  // path matching avoids the case-sensitivity trap where the bundle name
-  // and the executable name differ (e.g. Firefox.app/Contents/MacOS/firefox,
-  // Visual Studio Code.app/Contents/MacOS/Electron) — and avoids matching
-  // unrelated CLI binaries with shared lowercase names.
+  // Verify the app actually launched (poll up to 5s) by requiring its main
+  // executable when one can be resolved. A helper or XPC process left behind
+  // after a failed shutdown must not make a failed reopen look successful.
+  // Nonstandard bundles fall back to exact bundle-path tracking.
   //
   // Without bundlePath (osascript-only entries), trust `open -a` exit code
   // since we have no reliable way to verify the launched process.
@@ -181,8 +228,16 @@ export async function reopenGuiApp(app: DetectedApp): Promise<boolean> {
   let launched = false;
   while (Date.now() < launchDeadline) {
     await Bun.sleep(500);
-    launched = (await pidsInBundle(bundlePath)).length > 0;
-    if (launched) break;
+    try {
+      launched = (await scanLaunched!()).length > 0;
+      if (launched) break;
+    } catch (error) {
+      log.error("Cannot verify that app {app} reopened: {error}", {
+        app: appName,
+        error: errorMessage(error),
+      });
+      return false;
+    }
   }
 
   if (!launched) {
@@ -206,6 +261,67 @@ function filterLivePids(pids: number[]): number[] {
   });
 }
 
+type BundlePidScanner = (bundlePath: string) => Promise<number[]>;
+
+interface GuiProcessScannerDependencies {
+  resolveMainExecutable: (bundlePath: string) => Promise<string | undefined>;
+  scanExecutable: (executablePath: string) => Promise<number[]>;
+  scanBundle: BundlePidScanner;
+}
+
+interface GuiProcessScanner {
+  mode: "main" | "bundle" | "pid";
+  scan: () => Promise<number[]>;
+}
+
+const defaultGuiProcessScannerDependencies: GuiProcessScannerDependencies = {
+  resolveMainExecutable: resolveBundleMainExecutable,
+  scanExecutable: pidsForExecutable,
+  scanBundle: pidsInBundle,
+};
+
+/**
+ * Prefer main-executable tracking only after observing that executable alive.
+ * Otherwise use the whole bundle so an inspection failure cannot masquerade
+ * as a successful quit.
+ */
+export async function createGuiProcessScanner(
+  trackedPids: number[],
+  bundlePath?: string,
+  dependencies: GuiProcessScannerDependencies = defaultGuiProcessScannerDependencies,
+): Promise<GuiProcessScanner> {
+  if (!bundlePath) {
+    let pids = trackedPids;
+    return {
+      mode: "pid",
+      scan: async () => {
+        pids = filterLivePids(pids);
+        return pids;
+      },
+    };
+  }
+
+  const mainExecutable = await dependencies.resolveMainExecutable(bundlePath);
+  if (mainExecutable) {
+    const mainPids = await dependencies.scanExecutable(mainExecutable);
+    if (mainPids.length > 0) {
+      return {
+        mode: "main",
+        scan: () => dependencies.scanExecutable(mainExecutable),
+      };
+    }
+  }
+
+  return {
+    mode: "bundle",
+    scan: () => dependencies.scanBundle(bundlePath),
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * Return only the PIDs whose executable path currently resides under the
  * given .app bundle. Guards against PID recycling between detection and
@@ -221,8 +337,17 @@ async function filterPidsByBundle(
     stdout: "pipe",
     stderr: "pipe",
   });
-  const stdout = await new Response(proc.stdout).text();
-  await proc.exited;
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  // BSD ps exits 1 with no output when every requested PID disappeared in the
+  // race between scanning and verification. Any diagnostic is an inspection
+  // failure, not evidence that the app is gone.
+  if (exitCode !== 0 && stderr.trim()) {
+    throw new Error(`ps failed while verifying ${bundlePath}: ${stderr.trim()}`);
+  }
 
   const prefix = bundlePath.endsWith("/") ? bundlePath : bundlePath + "/";
   const verified: number[] = [];
