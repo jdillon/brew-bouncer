@@ -44,7 +44,11 @@ program
   .command("upgrade")
   .description("Update, upgrade, and detect what needs restarting")
   .argument("[packages...]", "Specific packages to upgrade (default: all)")
-  .option("-y, --yes", "Restart all affected apps without prompting", false)
+  .option(
+    "-y, --yes",
+    "Answer yes to all upgrade, restart, and quarantine prompts",
+    false,
+  )
   .action(async (packages: string[], opts: { yes: boolean }) => {
     const globalOpts = program.opts<{ verbose?: boolean }>();
     await upgrade({
