@@ -22,6 +22,13 @@ import {
 import { exec } from "./brew/runner.ts";
 import { log } from "./logger.ts";
 
+const PROCESS_POLL_INTERVAL_MS = 500;
+const GRACEFUL_QUIT_TIMEOUT_MS = 30_000;
+const SIGTERM_QUIT_TIMEOUT_MS = 15_000;
+const LAUNCH_TIMEOUT_MS = 20_000;
+const LAUNCH_STABILITY_MS = 2_000;
+const LAUNCH_RETRY_DELAY_MS = 5_000;
+
 export async function restartApp(app: DetectedApp): Promise<boolean> {
   switch (app.kind) {
     case "cask-gui":
@@ -35,14 +42,35 @@ export async function restartApp(app: DetectedApp): Promise<boolean> {
   }
 }
 
-export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
+interface QuitGuiAppDependencies {
+  createScanner: typeof createGuiProcessScanner;
+  requestQuit: (appName: string) => Promise<QuitRequestResult>;
+  waitForExit: typeof waitForNoProcesses;
+  sleep: (milliseconds: number) => Promise<void>;
+}
+
+const defaultQuitGuiAppDependencies: QuitGuiAppDependencies = {
+  createScanner: createGuiProcessScanner,
+  requestQuit: requestGuiAppQuit,
+  waitForExit: waitForNoProcesses,
+  sleep: Bun.sleep,
+};
+
+export async function quitGuiApp(
+  app: DetectedApp,
+  dependencyOverrides: Partial<QuitGuiAppDependencies> = {},
+): Promise<boolean> {
+  const dependencies = {
+    ...defaultQuitGuiAppDependencies,
+    ...dependencyOverrides,
+  };
   const appName = app.displayName.replace(/\.app$/, "");
   const detectedPids = app.pids;
   const bundlePath = app.bundlePath;
 
   let scanner: GuiProcessScanner;
   try {
-    scanner = await createGuiProcessScanner(detectedPids, bundlePath);
+    scanner = await dependencies.createScanner(detectedPids, bundlePath);
   } catch (error) {
     log.error("Cannot inspect processes for {app}: {error}", {
       app: appName,
@@ -53,22 +81,18 @@ export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
 
   // Quit the app gracefully via AppleScript
   log.debug("Quitting app: {app}", { app: appName });
-  const quit = Bun.spawn(
-    ["osascript", "-e", `tell application "${appName}" to quit`],
-    { stdout: "pipe", stderr: "pipe" }
-  );
-  const [, stderr, exitCode] = await Promise.all([
-    new Response(quit.stdout).text(),
-    new Response(quit.stderr).text(),
-    quit.exited,
-  ]);
+  const { stderr, exitCode } = await dependencies.requestQuit(appName);
+  const quitRequestSucceeded = exitCode === 0;
 
-  if (exitCode !== 0) {
-    log.error("Failed to request graceful quit for {app}: {stderr}", {
+  if (!quitRequestSucceeded) {
+    // Some apps (notably Raycast) return Apple event error -128 even though
+    // they accepted the quit request and proceed to terminate. The process
+    // scanner, not the AppleScript exit code, is the authoritative shutdown
+    // evidence. Continue polling and only succeed once the process is gone.
+    log.warn("Quit request for {app} returned an error; verifying exit: {stderr}", {
       app: appName,
       stderr: stderr.trim(),
     });
-    return false;
   }
 
   if (detectedPids.length === 0 && !bundlePath) {
@@ -76,7 +100,7 @@ export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
     return false;
   }
 
-  // Poll until the app's main executable is gone (up to 10s). Helpers and
+  // Poll until the app's main executable is gone. Helpers and
   // launchd-managed XPC services can legitimately outlive a conventional main
   // process. For nonstandard bundles where a main process cannot be proven,
   // conservatively retain exact bundle-path tracking instead.
@@ -84,20 +108,18 @@ export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
   // For osascript-only entries with no bundle path, fall back to the original
   // PID set. Using PIDs (not a name match) avoids killing unrelated processes
   // that share a case-insensitive name (e.g. Claude.app vs the `claude` CLI).
-  const quitDeadline = Date.now() + 10_000;
-  let livePids = detectedPids;
-  while (Date.now() < quitDeadline) {
-    try {
-      livePids = await scanner.scan();
-    } catch (error) {
-      log.error("Cannot verify that app {app} quit: {error}", {
-        app: appName,
-        error: errorMessage(error),
-      });
-      return false;
-    }
-    if (livePids.length === 0) break;
-    await Bun.sleep(500);
+  let livePids: number[];
+  try {
+    livePids = await dependencies.waitForExit(
+      scanner.scan,
+      GRACEFUL_QUIT_TIMEOUT_MS,
+    );
+  } catch (error) {
+    log.error("Cannot verify that app {app} quit: {error}", {
+      app: appName,
+      error: errorMessage(error),
+    });
+    return false;
   }
 
   // Escalate: SIGTERM only the specific surviving PIDs we detected.
@@ -106,6 +128,16 @@ export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
   // between detection and restart, so a stale PID could now belong to an
   // unrelated process. Skip any PID whose exec path no longer matches.
   if (livePids.length > 0) {
+    // A failed AppleScript request may still be followed by a natural exit,
+    // as Raycast demonstrates. If no exit follows, however, do not turn a
+    // genuinely rejected quit into a forced termination.
+    if (!quitRequestSucceeded) {
+      log.error("App {app} remained running after its quit request failed", {
+        app: appName,
+      });
+      return false;
+    }
+
     let verified: number[];
     try {
       verified = bundlePath
@@ -144,20 +176,18 @@ export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
         }
       }
 
-      const killDeadline = Date.now() + 5_000;
-      let stillLive = verified;
-      while (Date.now() < killDeadline) {
-        try {
-          stillLive = await scanner.scan();
-        } catch (error) {
-          log.error("Cannot verify that app {app} quit after SIGTERM: {error}", {
-            app: appName,
-            error: errorMessage(error),
-          });
-          return false;
-        }
-        if (stillLive.length === 0) break;
-        await Bun.sleep(500);
+      let stillLive: number[];
+      try {
+        stillLive = await dependencies.waitForExit(
+          scanner.scan,
+          SIGTERM_QUIT_TIMEOUT_MS,
+        );
+      } catch (error) {
+        log.error("Cannot verify that app {app} quit after SIGTERM: {error}", {
+          app: appName,
+          error: errorMessage(error),
+        });
+        return false;
       }
 
       if (stillLive.length > 0) {
@@ -171,9 +201,27 @@ export async function quitGuiApp(app: DetectedApp): Promise<boolean> {
   }
 
   // Let macOS release the old bundle before Homebrew replaces it.
-  await Bun.sleep(500);
+  await dependencies.sleep(500);
 
   return true;
+}
+
+interface QuitRequestResult {
+  stderr: string;
+  exitCode: number;
+}
+
+async function requestGuiAppQuit(appName: string): Promise<QuitRequestResult> {
+  const quit = Bun.spawn(
+    ["osascript", "-e", `tell application "${appName}" to quit`],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const [, stderr, exitCode] = await Promise.all([
+    new Response(quit.stdout).text(),
+    new Response(quit.stderr).text(),
+    quit.exited,
+  ]);
+  return { stderr, exitCode };
 }
 
 export async function reopenGuiApp(app: DetectedApp): Promise<boolean> {
@@ -181,12 +229,14 @@ export async function reopenGuiApp(app: DetectedApp): Promise<boolean> {
   const bundlePath = app.bundlePath;
 
   let scanLaunched: (() => Promise<number[]>) | undefined;
+  let preexistingPids: number[] = [];
   if (bundlePath) {
     try {
       const mainExecutable = await resolveBundleMainExecutable(bundlePath);
       scanLaunched = mainExecutable
         ? () => pidsForExecutable(mainExecutable)
         : () => pidsInBundle(bundlePath);
+      preexistingPids = await scanLaunched();
     } catch (error) {
       log.error("Cannot prepare launch verification for {app}: {error}", {
         app: appName,
@@ -196,27 +246,13 @@ export async function reopenGuiApp(app: DetectedApp): Promise<boolean> {
     }
   }
 
-  // Reopen the app
-  log.debug("Reopening app: {app}", { app: appName });
-  const open = Bun.spawn(
-    bundlePath ? ["open", bundlePath] : ["open", "-a", appName],
-    {
-      stdout: "pipe",
-      stderr: "pipe",
-    }
-  );
-  const exitCode = await open.exited;
+  const launch = () => launchGuiApp(appName, bundlePath);
+  if (!(await launch())) return false;
 
-  if (exitCode !== 0) {
-    const stderr = await new Response(open.stderr).text();
-    log.error("Failed to reopen app: {app} {stderr}", { app: appName, stderr });
-    return false;
-  }
-
-  // Verify the app actually launched (poll up to 5s) by requiring its main
-  // executable when one can be resolved. A helper or XPC process left behind
-  // after a failed shutdown must not make a failed reopen look successful.
-  // Nonstandard bundles fall back to exact bundle-path tracking.
+  // Verify that a new app process launched and remained alive. A process that
+  // was already terminating when `open` ran must not count as the relaunch.
+  // If that old process exits after the first `open`, retry once now that
+  // LaunchServices can create a genuinely new process.
   //
   // Without bundlePath (osascript-only entries), trust `open -a` exit code
   // since we have no reliable way to verify the launched process.
@@ -224,24 +260,146 @@ export async function reopenGuiApp(app: DetectedApp): Promise<boolean> {
     return true;
   }
 
-  const launchDeadline = Date.now() + 5_000;
-  let launched = false;
-  while (Date.now() < launchDeadline) {
-    await Bun.sleep(500);
-    try {
-      launched = (await scanLaunched!()).length > 0;
-      if (launched) break;
-    } catch (error) {
-      log.error("Cannot verify that app {app} reopened: {error}", {
-        app: appName,
-        error: errorMessage(error),
-      });
-      return false;
-    }
+  let launched: boolean;
+  try {
+    launched = await waitForFreshStableProcesses(
+      scanLaunched!,
+      preexistingPids,
+      launch,
+    );
+  } catch (error) {
+    log.error("Cannot verify that app {app} reopened: {error}", {
+      app: appName,
+      error: errorMessage(error),
+    });
+    return false;
   }
 
   if (!launched) {
     log.error("App {app} did not appear in process list after open", { app: appName });
+    return false;
+  }
+
+  return true;
+}
+
+interface ProcessPollClock {
+  now: () => number;
+  sleep: (milliseconds: number) => Promise<void>;
+}
+
+const systemProcessPollClock: ProcessPollClock = {
+  now: Date.now,
+  sleep: Bun.sleep,
+};
+
+/** Poll through the timeout boundary so a last-moment exit is observed. */
+export async function waitForNoProcesses(
+  scan: () => Promise<number[]>,
+  timeoutMs: number,
+  clock: ProcessPollClock = systemProcessPollClock,
+): Promise<number[]> {
+  const deadline = clock.now() + timeoutMs;
+  let livePids = await scan();
+
+  while (livePids.length > 0 && clock.now() < deadline) {
+    const remaining = deadline - clock.now();
+    await clock.sleep(Math.min(PROCESS_POLL_INTERVAL_MS, remaining));
+    livePids = await scan();
+  }
+
+  return livePids;
+}
+
+interface FreshProcessWaitOptions {
+  timeoutMs?: number;
+  stabilityMs?: number;
+  retryDelayMs?: number;
+  clock?: ProcessPollClock;
+}
+
+/**
+ * Require a new PID to remain present, excluding any process that existed
+ * before `open`. Retry once after an old PID finishes terminating, or after a
+ * delayed launch produces no process.
+ */
+export async function waitForFreshStableProcesses(
+  scan: () => Promise<number[]>,
+  preexistingPids: number[],
+  retryLaunch: () => Promise<boolean>,
+  options: FreshProcessWaitOptions = {},
+): Promise<boolean> {
+  const timeoutMs = options.timeoutMs ?? LAUNCH_TIMEOUT_MS;
+  const stabilityMs = options.stabilityMs ?? LAUNCH_STABILITY_MS;
+  const retryDelayMs = options.retryDelayMs ?? LAUNCH_RETRY_DELAY_MS;
+  const clock = options.clock ?? systemProcessPollClock;
+  const deadline = clock.now() + timeoutMs;
+  const retryAt = clock.now() + retryDelayMs;
+  const preexisting = new Set(preexistingPids);
+  let retried = false;
+  let stableKey = "";
+  let stableSince = 0;
+
+  while (clock.now() < deadline) {
+    const remaining = deadline - clock.now();
+    await clock.sleep(Math.min(PROCESS_POLL_INTERVAL_MS, remaining));
+
+    const currentPids = await scan();
+    const freshPids = currentPids
+      .filter((pid) => !preexisting.has(pid))
+      .sort((a, b) => a - b);
+    const freshKey = freshPids.join(",");
+
+    if (freshPids.length > 0) {
+      if (freshKey !== stableKey) {
+        stableKey = freshKey;
+        stableSince = clock.now();
+      } else if (clock.now() - stableSince >= stabilityMs) {
+        return true;
+      }
+    } else {
+      stableKey = "";
+      stableSince = 0;
+    }
+
+    if (!retried && freshPids.length === 0) {
+      const preexistingStillLive = currentPids.some((pid) => preexisting.has(pid));
+      const shouldRetry =
+        preexisting.size > 0 ? !preexistingStillLive : clock.now() >= retryAt;
+      const hasVerificationWindow =
+        deadline - clock.now() >= stabilityMs + PROCESS_POLL_INTERVAL_MS;
+      if (shouldRetry && hasVerificationWindow) {
+        if (!(await retryLaunch())) return false;
+        retried = true;
+        stableKey = "";
+        stableSince = 0;
+      }
+    }
+  }
+
+  return false;
+}
+
+async function launchGuiApp(
+  appName: string,
+  bundlePath?: string,
+): Promise<boolean> {
+  log.debug("Reopening app: {app}", { app: appName });
+  const open = Bun.spawn(
+    bundlePath ? ["open", bundlePath] : ["open", "-a", appName],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const [, stderr, exitCode] = await Promise.all([
+    new Response(open.stdout).text(),
+    new Response(open.stderr).text(),
+    open.exited,
+  ]);
+
+  if (exitCode !== 0) {
+    log.error("Failed to reopen app: {app} {stderr}", {
+      app: appName,
+      stderr: stderr.trim(),
+    });
     return false;
   }
 
