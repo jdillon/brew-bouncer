@@ -275,7 +275,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
 
     if (result.exitCode !== 0) {
       failCount++;
-      if (stoppedBeforeUpgrade && app) await doReopen(app);
+      if (stoppedBeforeUpgrade && app) await doReopen(app, true);
       console.log("");
       continue;
     }
@@ -312,7 +312,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
         restartSkippedCount++;
       } else if (restartRequested) {
         const ok = stoppedBeforeUpgrade
-          ? await doReopen(app)
+          ? await doReopen(app, true)
           : await doRestart(app);
         if (ok) restartedCount++;
       } else {
@@ -357,9 +357,12 @@ async function doQuit(app: DetectedApp): Promise<boolean> {
   return ok;
 }
 
-async function doReopen(app: DetectedApp): Promise<boolean> {
+async function doReopen(
+  app: DetectedApp,
+  previousProcessWasStopped = false,
+): Promise<boolean> {
   process.stdout.write(`  ${chalk.cyan("⟳")} Reopening ${chalk.bold(app.displayName)}... `);
-  const ok = await reopenGuiApp(app);
+  const ok = await reopenGuiApp(app, { previousProcessWasStopped });
   console.log(ok ? chalk.green("done") : chalk.red("failed"));
   return ok;
 }

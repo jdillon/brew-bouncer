@@ -224,7 +224,14 @@ async function requestGuiAppQuit(appName: string): Promise<QuitRequestResult> {
   return { stderr, exitCode };
 }
 
-export async function reopenGuiApp(app: DetectedApp): Promise<boolean> {
+interface ReopenGuiAppOptions {
+  previousProcessWasStopped?: boolean;
+}
+
+export async function reopenGuiApp(
+  app: DetectedApp,
+  options: ReopenGuiAppOptions = {},
+): Promise<boolean> {
   const appName = app.displayName.replace(/\.app$/, "");
   const bundlePath = app.bundlePath;
 
@@ -236,7 +243,13 @@ export async function reopenGuiApp(app: DetectedApp): Promise<boolean> {
       scanLaunched = mainExecutable
         ? () => pidsForExecutable(mainExecutable)
         : () => pidsInBundle(bundlePath);
-      preexistingPids = await scanLaunched();
+      const observedPids = await scanLaunched();
+      // Homebrew may reopen applications named by a cask's `quit` stanza
+      // during `brew upgrade`. Once we already proved the old process stopped,
+      // these observed PIDs belong to a valid post-upgrade launch and must not
+      // be excluded as stale. On recovery from a failed quit, keep excluding
+      // them because they may still be the terminating old process.
+      preexistingPids = options.previousProcessWasStopped ? [] : observedPids;
     } catch (error) {
       log.error("Cannot prepare launch verification for {app}: {error}", {
         app: appName,

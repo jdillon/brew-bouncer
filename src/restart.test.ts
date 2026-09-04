@@ -206,6 +206,22 @@ test("accepts one stable fresh process while helper PIDs change", async () => {
   expect(retryLaunch).not.toHaveBeenCalled();
 });
 
+test("accepts a process Homebrew already reopened after the old one stopped", async () => {
+  const { clock } = createFakeClock();
+  const scan = mock(async () => [202]);
+  const retryLaunch = mock(async () => true);
+
+  const launched = await waitForFreshStableProcesses(
+    scan,
+    [],
+    retryLaunch,
+    { timeoutMs: 2_000, stabilityMs: 1_000, clock },
+  );
+
+  expect(launched).toBe(true);
+  expect(retryLaunch).not.toHaveBeenCalled();
+});
+
 test("does not retry without time to verify the result", async () => {
   const { clock } = createFakeClock();
   const results = [[101], []];
