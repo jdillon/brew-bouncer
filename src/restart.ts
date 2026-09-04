@@ -32,7 +32,7 @@ const LAUNCH_RETRY_DELAY_MS = 5_000;
 export async function restartApp(app: DetectedApp): Promise<boolean> {
   switch (app.kind) {
     case "cask-gui":
-      if (!(await quitGuiApp(app))) return false;
+      if ((await quitGuiApp(app)) !== "stopped") return false;
       return reopenGuiApp(app);
     case "formula-service":
       return restartService(app);
@@ -41,6 +41,8 @@ export async function restartApp(app: DetectedApp): Promise<boolean> {
       return restartCliProcess(app);
   }
 }
+
+export type GuiQuitStatus = "stopped" | "running" | "unknown";
 
 interface QuitGuiAppDependencies {
   createScanner: typeof createGuiProcessScanner;
@@ -59,7 +61,7 @@ const defaultQuitGuiAppDependencies: QuitGuiAppDependencies = {
 export async function quitGuiApp(
   app: DetectedApp,
   dependencyOverrides: Partial<QuitGuiAppDependencies> = {},
-): Promise<boolean> {
+): Promise<GuiQuitStatus> {
   const dependencies = {
     ...defaultQuitGuiAppDependencies,
     ...dependencyOverrides,
@@ -76,7 +78,7 @@ export async function quitGuiApp(
       app: appName,
       error: errorMessage(error),
     });
-    return false;
+    return "unknown";
   }
 
   // Quit the app gracefully via AppleScript
@@ -97,7 +99,7 @@ export async function quitGuiApp(
 
   if (detectedPids.length === 0 && !bundlePath) {
     log.error("Cannot verify that app {app} quit", { app: appName });
-    return false;
+    return "unknown";
   }
 
   // Poll until the app's main executable is gone. Helpers and
@@ -119,7 +121,7 @@ export async function quitGuiApp(
       app: appName,
       error: errorMessage(error),
     });
-    return false;
+    return "unknown";
   }
 
   // Escalate: SIGTERM only the specific surviving PIDs we detected.
@@ -135,7 +137,7 @@ export async function quitGuiApp(
       log.error("App {app} remained running after its quit request failed", {
         app: appName,
       });
-      return false;
+      return "running";
     }
 
     let verified: number[];
@@ -148,7 +150,7 @@ export async function quitGuiApp(
         app: appName,
         error: errorMessage(error),
       });
-      return false;
+      return "unknown";
     }
 
     const skipped = livePids.filter((p) => !verified.includes(p));
@@ -187,7 +189,7 @@ export async function quitGuiApp(
           app: appName,
           error: errorMessage(error),
         });
-        return false;
+        return "unknown";
       }
 
       if (stillLive.length > 0) {
@@ -195,7 +197,7 @@ export async function quitGuiApp(
           app: appName,
           pids: stillLive.join(","),
         });
-        return false;
+        return "running";
       }
     }
   }
@@ -203,7 +205,7 @@ export async function quitGuiApp(
   // Let macOS release the old bundle before Homebrew replaces it.
   await dependencies.sleep(500);
 
-  return true;
+  return "stopped";
 }
 
 interface QuitRequestResult {

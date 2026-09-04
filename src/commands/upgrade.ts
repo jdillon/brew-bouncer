@@ -21,7 +21,12 @@ import {
   detectInstallerManualCasks,
 } from "../brew/parser.ts";
 import { detectRunningUpgrades, type DetectedApp } from "../detect/matcher.ts";
-import { quitGuiApp, reopenGuiApp, restartApp } from "../restart.ts";
+import {
+  quitGuiApp,
+  reopenGuiApp,
+  restartApp,
+  type GuiQuitStatus,
+} from "../restart.ts";
 import { confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart, confirmQuarantinePolicy, confirmUnquarantine, type PolicyChoice, type RestartPolicy } from "../prompt.ts";
 import { enumeratePackageExecutables, isQuarantined, removeQuarantine } from "../quarantine.ts";
 import { loadConfig } from "../config.ts";
@@ -260,11 +265,12 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     // opted-in restarts, stop it cleanly before Homebrew touches the bundle.
     let stoppedBeforeUpgrade = false;
     if (restartRequested && app?.kind === "cask-gui") {
-      stoppedBeforeUpgrade = await doQuit(app);
+      const quitStatus = await doQuit(app);
+      stoppedBeforeUpgrade = quitStatus === "stopped";
       if (!stoppedBeforeUpgrade) {
         failCount++;
         console.log(chalk.yellow("  Upgrade skipped because the app did not quit"));
-        await doReopen(app);
+        if (quitStatus === "unknown") await doReopen(app);
         console.log("");
         continue;
       }
@@ -350,11 +356,11 @@ async function doRestart(app: DetectedApp): Promise<boolean> {
   return ok;
 }
 
-async function doQuit(app: DetectedApp): Promise<boolean> {
+async function doQuit(app: DetectedApp): Promise<GuiQuitStatus> {
   process.stdout.write(`  ${chalk.cyan("⟳")} Quitting ${chalk.bold(app.displayName)}... `);
-  const ok = await quitGuiApp(app);
-  console.log(ok ? chalk.green("done") : chalk.red("failed"));
-  return ok;
+  const status = await quitGuiApp(app);
+  console.log(status === "stopped" ? chalk.green("done") : chalk.red("failed"));
+  return status;
 }
 
 async function doReopen(

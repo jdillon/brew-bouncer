@@ -119,7 +119,7 @@ test("accepts a quit-request error when process shutdown is verified", async () 
     },
   );
 
-  expect(quit).toBe(true);
+  expect(quit).toBe("stopped");
   expect(waitForExit).toHaveBeenCalledTimes(1);
   expect(sleep).toHaveBeenCalledWith(500);
 });
@@ -150,9 +150,30 @@ test("does not force-stop an app that rejects its quit request", async () => {
     },
   );
 
-  expect(quit).toBe(false);
+  expect(quit).toBe("running");
   expect(waitForExit).toHaveBeenCalledTimes(1);
   expect(sleep).not.toHaveBeenCalled();
+});
+
+test("reports an unknown quit state when shutdown cannot be inspected", async () => {
+  const quit = await quitGuiApp(
+    {
+      packageName: "example",
+      oldVersion: "1.0",
+      newVersion: "2.0",
+      kind: "cask-gui",
+      displayName: "Example.app",
+      bundlePath: "/Applications/Example.app",
+      pids: [101],
+    },
+    {
+      createScanner: async () => {
+        throw new Error("process inspection failed");
+      },
+    },
+  );
+
+  expect(quit).toBe("unknown");
 });
 
 test("does not count a terminating PID as a successful relaunch", async () => {
