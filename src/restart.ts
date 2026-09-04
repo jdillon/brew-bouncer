@@ -337,7 +337,7 @@ export async function waitForFreshStableProcesses(
   const retryAt = clock.now() + retryDelayMs;
   const preexisting = new Set(preexistingPids);
   let retried = false;
-  let stableKey = "";
+  let stablePid: number | undefined;
   let stableSince = 0;
 
   while (clock.now() < deadline) {
@@ -348,17 +348,18 @@ export async function waitForFreshStableProcesses(
     const freshPids = currentPids
       .filter((pid) => !preexisting.has(pid))
       .sort((a, b) => a - b);
-    const freshKey = freshPids.join(",");
+    const stablePidStillLive =
+      stablePid !== undefined && freshPids.includes(stablePid);
 
     if (freshPids.length > 0) {
-      if (freshKey !== stableKey) {
-        stableKey = freshKey;
+      if (!stablePidStillLive) {
+        stablePid = freshPids[0];
         stableSince = clock.now();
       } else if (clock.now() - stableSince >= stabilityMs) {
         return true;
       }
     } else {
-      stableKey = "";
+      stablePid = undefined;
       stableSince = 0;
     }
 
@@ -371,7 +372,7 @@ export async function waitForFreshStableProcesses(
       if (shouldRetry && hasVerificationWindow) {
         if (!(await retryLaunch())) return false;
         retried = true;
-        stableKey = "";
+        stablePid = undefined;
         stableSince = 0;
       }
     }

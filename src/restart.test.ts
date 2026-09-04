@@ -189,6 +189,23 @@ test("does not retry when the first launch produced a fresh process", async () =
   expect(retryLaunch).not.toHaveBeenCalled();
 });
 
+test("accepts one stable fresh process while helper PIDs change", async () => {
+  const { clock } = createFakeClock();
+  const results = [[202, 203], [202], [202, 204]];
+  const scan = mock(async () => results.shift() ?? [202]);
+  const retryLaunch = mock(async () => true);
+
+  const launched = await waitForFreshStableProcesses(
+    scan,
+    [],
+    retryLaunch,
+    { timeoutMs: 3_000, stabilityMs: 1_000, clock },
+  );
+
+  expect(launched).toBe(true);
+  expect(retryLaunch).not.toHaveBeenCalled();
+});
+
 test("does not retry without time to verify the result", async () => {
   const { clock } = createFakeClock();
   const results = [[101], []];
