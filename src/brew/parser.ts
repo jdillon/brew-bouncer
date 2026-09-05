@@ -215,6 +215,16 @@ export function extractCaskPkgIds(cask: BrewCask): string[] {
   return ids;
 }
 
+/** Extract application bundles installed directly into /Applications by a pkg. */
+export function extractPkgAppNames(files: string[]): string[] {
+  const apps = new Set<string>();
+  for (const file of files) {
+    const match = file.match(/^\/Applications\/([^/]+\.app)(?:\/|$)/);
+    if (match) apps.add(match[1]!);
+  }
+  return [...apps];
+}
+
 export function parseBrewServices(
   output: string
 ): Array<{ name: string; status: string; user: string }> {

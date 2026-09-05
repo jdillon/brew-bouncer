@@ -20,6 +20,7 @@ import { join } from "node:path";
 import {
   extractKegPrefixes,
   matchFormulaToRunningProcesses,
+  matchPkgFilesToRunningProcesses,
   realPath,
   type RunningProcess,
 } from "./formulae.ts";
@@ -117,6 +118,31 @@ test("a process launched through a bin symlink matches its keg", () => {
     processes
   );
   expect(matched.map((p) => p.pid)).toEqual([4242]);
+});
+
+test("a process installed by a pkg receipt matches its cask", () => {
+  const processes = [
+    proc(
+      76919,
+      "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_console_user_server"
+    ),
+  ];
+  const files = [
+    "/Applications/Karabiner-Elements.app",
+    "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_console_user_server",
+  ];
+
+  expect(matchPkgFilesToRunningProcesses(files, processes).map((p) => p.pid))
+    .toEqual([76919]);
+});
+
+test("a same-named process outside a pkg receipt does not match", () => {
+  const processes = [proc(1, "/usr/local/bin/karabiner_console_user_server")];
+  const files = [
+    "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_console_user_server",
+  ];
+
+  expect(matchPkgFilesToRunningProcesses(files, processes)).toEqual([]);
 });
 
 const cleanups: string[] = [];

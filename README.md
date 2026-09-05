@@ -39,7 +39,7 @@ brew bouncer upgrade
 # Upgrade specific packages
 brew bouncer upgrade firefox slack
 
-# Skip all confirmations
+# Approve upgrades, restarts, and quarantine removal without prompting
 brew bouncer upgrade --yes
 ```
 
@@ -66,6 +66,9 @@ upgrade prompts:
 
 If omitted, the built-in defaults remain `yes` for upgrade confirmation and
 `no` for restart/quarantine policy prompts.
+
+`--yes` overrides these defaults and answers yes to every upgrade, restart,
+and quarantine-removal prompt.
 
 ## Building from source
 

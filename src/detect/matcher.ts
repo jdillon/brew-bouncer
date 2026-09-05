@@ -18,13 +18,14 @@ import {
   brewInfoJson,
   brewList,
   brewServicesList,
-  pkgutilAppNames,
+  pkgutilFiles,
 } from "../brew/runner.ts";
 import {
   parseBrewInfo,
   extractCaskAppNames,
   extractCaskBinaryNames,
   extractCaskPkgIds,
+  extractPkgAppNames,
   parseBrewServices,
 } from "../brew/parser.ts";
 import {
@@ -35,6 +36,7 @@ import {
   getRunningProcesses,
   extractKegPrefixes,
   matchBinaryNamesToRunningProcesses,
+  matchPkgFilesToRunningProcesses,
   matchFormulaToRunningProcesses,
   matchFormulaToRunningServices,
 } from "./formulae.ts";
@@ -101,6 +103,7 @@ export async function detectRunningUpgrades(
 
       log.debug("Checking cask {name}", { name: cask.token });
       let appNames = extractCaskAppNames(cask);
+      let pkgFiles: string[] = [];
 
       log.debug("Cask {name} app artifacts: {apps}", {
         name: cask.token,
@@ -111,9 +114,10 @@ export async function detectRunningUpgrades(
       if (appNames.length === 0) {
         const pkgIds = extractCaskPkgIds(cask);
         const pkgResults = await Promise.all(
-          pkgIds.map((id) => pkgutilAppNames(id))
+          pkgIds.map((id) => pkgutilFiles(id))
         );
-        appNames = pkgResults.flat();
+        pkgFiles = pkgResults.flat();
+        appNames = extractPkgAppNames(pkgFiles);
       }
 
       const matched = matchCaskToRunningApps(appNames, runningApps);
@@ -170,7 +174,25 @@ export async function detectRunningUpgrades(
             displayName: binMatched[0]!.name,
             pids: binMatched.map((m) => m.pid),
           });
+          continue;
         }
+      }
+
+      // Pkg casks can run agents outside their public .app or binary artifacts.
+      // Match exact receipt paths so those processes remain scoped to the cask.
+      const pkgMatched = matchPkgFilesToRunningProcesses(
+        pkgFiles,
+        runningProcesses
+      );
+      if (pkgMatched.length > 0) {
+        detected.push({
+          packageName: pkg.name,
+          oldVersion: pkg.installedVersions[0] ?? "unknown",
+          newVersion: pkg.currentVersion,
+          kind: "cask-cli",
+          displayName: pkgMatched[0]!.name,
+          pids: pkgMatched.map((process) => process.pid),
+        });
       }
     }
   }

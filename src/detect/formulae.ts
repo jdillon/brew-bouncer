@@ -160,6 +160,18 @@ export function matchBinaryNamesToRunningProcesses(
   return matched;
 }
 
+/** Match running executables to paths recorded in a macOS package receipt. */
+export function matchPkgFilesToRunningProcesses(
+  files: string[],
+  processes: RunningProcess[]
+): RunningProcess[] {
+  const installedPaths = new Set(files);
+
+  return processes.filter((proc) =>
+    installedPaths.has(proc.command) || installedPaths.has(proc.path)
+  );
+}
+
 export interface RunningService {
   name: string;
   status: string;

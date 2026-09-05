@@ -19,9 +19,10 @@ import {
   extractCaskAppNames,
   extractCaskBinaryNames,
   extractCaskPkgIds,
+  extractPkgAppNames,
 } from "./brew/parser.ts";
 import { HOMEBREW_PREFIX, HOMEBREW_BIN } from "./brew/paths.ts";
-import { brewList, pkgutilAppNames } from "./brew/runner.ts";
+import { brewList, pkgutilFiles } from "./brew/runner.ts";
 
 const log = getLogger(["brew-bouncer", "quarantine"]);
 
@@ -112,8 +113,8 @@ async function caskQuarantinePaths(cask: BrewCask): Promise<string[]> {
   // Mirrors the detection logic in src/detect/matcher.ts.
   if (extractCaskAppNames(cask).length === 0) {
     const pkgIds = extractCaskPkgIds(cask);
-    const pkgResults = await Promise.all(pkgIds.map((id) => pkgutilAppNames(id)));
-    for (const appName of pkgResults.flat()) {
+    const pkgResults = await Promise.all(pkgIds.map((id) => pkgutilFiles(id)));
+    for (const appName of extractPkgAppNames(pkgResults.flat())) {
       paths.push(`/Applications/${appName}`);
     }
   }
