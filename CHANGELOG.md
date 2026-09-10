@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Pkg-installed casks are now detected and apps are restarted safely after upgrade
+- GUI app restart now waits for confirmed shutdown and verifies successful relaunch before proceeding
+
 ## [0.3.1] - 2026-08-29
 
 ### Fixed
