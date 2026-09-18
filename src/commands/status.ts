@@ -13,7 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { brewUpdate, brewOutdated, brewInfoJson } from "../brew/runner.ts";
+import {
+  brewUpdate,
+  brewOutdated,
+  brewInfoJson,
+  formatExecFailure,
+} from "../brew/runner.ts";
 import {
   parseOutdated,
   filterOutdated,
@@ -22,7 +27,6 @@ import {
 } from "../brew/parser.ts";
 import { detectRunningUpgrades } from "../detect/matcher.ts";
 import { loadConfig } from "../config.ts";
-import { log } from "../logger.ts";
 import { spinner } from "../spinner.ts";
 import { renderPackageTable, renderSkipped, renderSummary } from "../output/format.ts";
 import chalk from "chalk";
@@ -34,7 +38,7 @@ export async function status(): Promise<void> {
   const updateResult = await brewUpdate();
   if (updateResult.exitCode !== 0) {
     s1.fail("brew update failed");
-    log.error("brew update failed: {stderr}", { stderr: updateResult.stderr });
+    console.error(formatExecFailure("brew update", updateResult));
     process.exit(1);
   }
   s1.done("Homebrew updated");
@@ -42,7 +46,13 @@ export async function status(): Promise<void> {
   const s2 = spinner("Checking for outdated packages...");
   const outdatedResult = await brewOutdated();
 
-  if (outdatedResult.exitCode !== 0 || !outdatedResult.stdout.trim()) {
+  if (outdatedResult.exitCode !== 0) {
+    s2.fail("brew outdated failed");
+    console.error(formatExecFailure("brew outdated --greedy --json", outdatedResult));
+    process.exit(1);
+  }
+
+  if (!outdatedResult.stdout.trim()) {
     s2.done("Everything is up to date.");
     return;
   }

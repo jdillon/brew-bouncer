@@ -24,6 +24,19 @@ export interface ExecResult {
   exitCode: number;
 }
 
+/**
+ * Format a failed subprocess result for unconditional user-facing output.
+ *
+ * Diagnostic logging is intentionally optional, but a command failure must
+ * always explain itself. Some commands write failures to stdout, so use that
+ * when stderr is empty and fall back to the exit code when both are empty.
+ */
+export function formatExecFailure(command: string, result: ExecResult): string {
+  const detail = result.stderr.trim() || result.stdout.trim();
+  const summary = `${command} exited with status ${result.exitCode}`;
+  return detail ? `${summary}:\n${detail}` : `${summary} without an error message.`;
+}
+
 export async function exec(args: string[]): Promise<ExecResult> {
   log.debug("exec: brew {args}", { args: args.join(" ") });
 

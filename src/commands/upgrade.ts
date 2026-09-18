@@ -13,7 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { brewUpdate, brewOutdated, brewUpgrade, brewInfoJson, exec } from "../brew/runner.ts";
+import {
+  brewUpdate,
+  brewOutdated,
+  brewUpgrade,
+  brewInfoJson,
+  exec,
+  formatExecFailure,
+} from "../brew/runner.ts";
 import {
   parseOutdated,
   filterOutdated,
@@ -57,7 +64,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   const updateResult = await brewUpdate();
   if (updateResult.exitCode !== 0) {
     s1.fail("brew update failed");
-    log.error("brew update failed: {stderr}", { stderr: updateResult.stderr });
+    console.error(formatExecFailure("brew update", updateResult));
     process.exit(1);
   }
   s1.done("Homebrew updated");
@@ -66,7 +73,13 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   const s2 = spinner("Checking for outdated packages...");
   const outdatedResult = await brewOutdated();
 
-  if (outdatedResult.exitCode !== 0 || !outdatedResult.stdout.trim()) {
+  if (outdatedResult.exitCode !== 0) {
+    s2.fail("brew outdated failed");
+    console.error(formatExecFailure("brew outdated --greedy --json", outdatedResult));
+    process.exit(1);
+  }
+
+  if (!outdatedResult.stdout.trim()) {
     s2.done("Everything is up to date.");
     return;
   }
