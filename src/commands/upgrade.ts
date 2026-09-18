@@ -293,6 +293,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     diagnostics.push(...collectUpgradeDiagnostics(pkg.name, result.stdout, result.stderr));
 
     if (result.exitCode !== 0) {
+      console.error(`brew upgrade ${pkg.name} exited with status ${result.exitCode}.`);
       failCount++;
       if (stoppedBeforeUpgrade && app) await doReopen(app, true);
       console.log("");
