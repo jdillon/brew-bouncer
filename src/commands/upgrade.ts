@@ -343,6 +343,8 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     const suppressHomebrewQuit = pkg.type === "cask" && executionProtected;
     if (executionProtected) {
       restartRequested = false;
+    }
+    if (executionProtected && (app || suppressHomebrewQuit)) {
       const protectiveAssessment =
         decisionAssessment && decisionAssessment.membership !== "not-host"
           ? decisionAssessment
