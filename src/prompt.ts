@@ -17,6 +17,7 @@ import * as readline from "node:readline/promises";
 import { checkbox } from "@inquirer/prompts";
 import type { OutdatedPackage } from "./brew/parser.ts";
 import type { DetectedApp } from "./detect/matcher.ts";
+import type { ExecutionTargetAssessment } from "./detect/execution-context.ts";
 import { shortVersion, formatStatus } from "./output/format.ts";
 import chalk from "chalk";
 
@@ -126,13 +127,16 @@ export async function confirmUpgrade(
  */
 export async function selectPackages(
   packages: OutdatedPackage[],
-  detectedMap: Map<string, DetectedApp>
+  detectedMap: Map<string, DetectedApp>,
+  executionAssessments?: Map<string, ExecutionTargetAssessment>,
 ): Promise<OutdatedPackage[]> {
   // Build choice labels with version info and restart status
   const choices = packages.map((pkg) => {
     const detected = detectedMap.get(pkg.name);
     const version = `${chalk.red(shortVersion(pkg.installedVersions[0] ?? ""))} ${chalk.dim("→")} ${chalk.green(shortVersion(pkg.currentVersion))}`;
-    const status = detected ? `  ${formatStatus(detected)}` : "";
+    const status = detected
+      ? `  ${formatStatus(detected, executionAssessments?.get(pkg.name))}`
+      : "";
     const label = `${chalk.white(pkg.name)}  ${version}${status}`;
 
     return {

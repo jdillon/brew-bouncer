@@ -53,6 +53,11 @@ export interface DetectedApp {
   displayName: string;
   pids: number[];
   /**
+   * Executable identities observed during detection. Used to revalidate CLI
+   * execution-stack membership without trusting a PID that may be recycled.
+   */
+  executablePaths?: string[];
+  /**
    * For cask-gui: absolute path to the .app bundle (when discoverable).
    * Used by the restart layer to verify a PID belongs to this exact bundle
    * before sending SIGTERM, preventing collateral damage to unrelated
@@ -173,6 +178,9 @@ export async function detectRunningUpgrades(
             kind: "cask-cli",
             displayName: binMatched[0]!.name,
             pids: binMatched.map((m) => m.pid),
+            executablePaths: [
+              ...new Set(binMatched.flatMap((m) => [m.command, m.path])),
+            ],
           });
           continue;
         }
@@ -192,6 +200,9 @@ export async function detectRunningUpgrades(
           kind: "cask-cli",
           displayName: pkgMatched[0]!.name,
           pids: pkgMatched.map((process) => process.pid),
+          executablePaths: [
+            ...new Set(pkgMatched.flatMap((process) => [process.command, process.path])),
+          ],
         });
       }
     }
@@ -236,6 +247,9 @@ export async function detectRunningUpgrades(
             kind: "formula-cli" as const,
             displayName: matched[0]!.name,
             pids: matched.map((m) => m.pid),
+            executablePaths: [
+              ...new Set(matched.flatMap((m) => [m.command, m.path])),
+            ],
           };
         }
 

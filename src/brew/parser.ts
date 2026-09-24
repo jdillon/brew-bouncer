@@ -215,6 +215,40 @@ export function extractCaskPkgIds(cask: BrewCask): string[] {
   return ids;
 }
 
+/**
+ * Return uninstall directives that Homebrew can still run during an upgrade
+ * when `--no-quit` is set. `signal` is skipped on upgrades unless the cask
+ * explicitly opts into it with `on_upgrade`.
+ */
+export function extractCaskNonQuitUpgradeDirectives(cask: BrewCask): string[] {
+  const directives = new Set<string>();
+
+  for (const artifact of cask.artifacts) {
+    if (!("uninstall" in artifact) || !Array.isArray(artifact.uninstall)) {
+      continue;
+    }
+
+    for (const entry of artifact.uninstall) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const record = entry as Record<string, unknown>;
+      const onUpgrade = new Set(
+        (Array.isArray(record.on_upgrade)
+          ? record.on_upgrade
+          : [record.on_upgrade]
+        ).filter((value): value is string => typeof value === "string"),
+      );
+
+      for (const directive of Object.keys(record)) {
+        if (directive === "quit" || directive === "on_upgrade") continue;
+        if (directive === "signal" && !onUpgrade.has("signal")) continue;
+        directives.add(directive);
+      }
+    }
+  }
+
+  return [...directives].sort();
+}
+
 /** Extract application bundles installed directly into /Applications by a pkg. */
 export function extractPkgAppNames(files: string[]): string[] {
   const apps = new Set<string>();

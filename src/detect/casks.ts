@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import { getLogger } from "@logtape/logtape";
+import { extractOutermostAppBundlePath } from "./bundles.ts";
 
 const log = getLogger(["brew-bouncer", "detect", "casks"]);
 
@@ -188,7 +189,6 @@ async function getAppsFromProcessList(): Promise<RunningApp[]> {
   // Capture only the *outermost* .app bundle. A path like
   //   /Applications/Foo.app/Contents/Frameworks/Foo Helper.app/Contents/MacOS/...
   // should attribute to Foo.app, not "Foo Helper.app".
-  const bundlePathPattern = /^(.+?\/([^/]+\.app))\//;
   const byBundlePath = new Map<string, RunningApp>();
 
   for (const line of stdout.split("\n")) {
@@ -203,11 +203,9 @@ async function getAppsFromProcessList(): Promise<RunningApp[]> {
     const pid = Number.parseInt(pidStr, 10);
     if (!Number.isFinite(pid)) continue;
 
-    const match = command.match(bundlePathPattern);
-    if (!match) continue;
-
-    const bundlePath = match[1]!;
-    const bundleName = match[2]!;
+    const bundlePath = extractOutermostAppBundlePath(command);
+    if (!bundlePath) continue;
+    const bundleName = bundlePath.split("/").pop()!;
 
     let app = byBundlePath.get(bundlePath);
     if (!app) {

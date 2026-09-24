@@ -15,6 +15,7 @@
  */
 import type { OutdatedPackage } from "../brew/parser.ts";
 import type { DetectedApp } from "../detect/matcher.ts";
+import type { ExecutionTargetAssessment } from "../detect/execution-context.ts";
 import chalk from "chalk";
 import Table from "cli-table3";
 
@@ -28,7 +29,17 @@ export function shortVersion(v: string): string {
   return base;
 }
 
-export function formatStatus(app: DetectedApp): string {
+export function formatStatus(
+  app: DetectedApp,
+  executionAssessment?: ExecutionTargetAssessment,
+): string {
+  if (executionAssessment?.membership === "host") {
+    return chalk.yellow("⚠ execution context");
+  }
+  if (executionAssessment?.membership === "unknown") {
+    return chalk.yellow("? execution path unknown");
+  }
+
   switch (app.kind) {
     case "cask-gui":
       return chalk.yellow("⟳ restart needed");
@@ -52,7 +63,8 @@ const borderlessChars = {
  */
 export function renderPackageTable(
   packages: OutdatedPackage[],
-  detectedMap?: Map<string, DetectedApp>
+  detectedMap?: Map<string, DetectedApp>,
+  executionAssessments?: Map<string, ExecutionTargetAssessment>,
 ): string {
   const table = new Table({
     chars: borderlessChars,
@@ -61,7 +73,9 @@ export function renderPackageTable(
 
   for (const pkg of packages) {
     const detected = detectedMap?.get(pkg.name);
-    const statusCell = detected ? formatStatus(detected) : "";
+    const statusCell = detected
+      ? formatStatus(detected, executionAssessments?.get(pkg.name))
+      : "";
     const typeIcon = pkg.type === "cask" ? "🍷" : "🍺";
 
     table.push([

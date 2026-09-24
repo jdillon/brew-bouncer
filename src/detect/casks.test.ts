@@ -15,6 +15,13 @@
  */
 import { expect, test } from "bun:test";
 import { parsePidsForExecutable } from "./casks.ts";
+import { extractOutermostAppBundlePath } from "./bundles.ts";
+
+test("extracts the outermost bundle from a nested helper", () => {
+  expect(extractOutermostAppBundlePath(
+    "/Applications/Orca.app/Contents/Frameworks/Orca Helper.app/Contents/MacOS/Orca Helper",
+  )).toBe("/Applications/Orca.app");
+});
 
 test("main executable matching excludes helpers inside the same bundle", () => {
   const processList = `

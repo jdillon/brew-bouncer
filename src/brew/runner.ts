@@ -102,8 +102,22 @@ export async function brewOutdated(): Promise<ExecResult> {
  * Brew owns stdout/stderr so the user sees all output including
  * prompts, caveats, and progress.
  */
-export async function brewUpgrade(name: string): Promise<ExecResult> {
-  return execStreaming(["upgrade", name]);
+export interface BrewUpgradeOptions {
+  noQuit?: boolean;
+}
+
+export function brewUpgradeArgs(
+  name: string,
+  options: BrewUpgradeOptions = {},
+): string[] {
+  return ["upgrade", ...(options.noQuit ? ["--no-quit"] : []), name];
+}
+
+export async function brewUpgrade(
+  name: string,
+  options: BrewUpgradeOptions = {},
+): Promise<ExecResult> {
+  return execStreaming(brewUpgradeArgs(name, options));
 }
 
 export async function brewInfoJson(names: string[]): Promise<ExecResult> {
