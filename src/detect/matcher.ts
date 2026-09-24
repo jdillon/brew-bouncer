@@ -165,45 +165,34 @@ export async function detectRunningUpgrades(
           bins: binaryNames.join(", "),
         });
       }
-      if (binaryNames.length > 0) {
-        const binMatched = matchBinaryNamesToRunningProcesses(
-          binaryNames,
-          runningProcesses
-        );
-        if (binMatched.length > 0) {
-          detected.push({
-            packageName: pkg.name,
-            oldVersion: pkg.installedVersions[0] ?? "unknown",
-            newVersion: pkg.currentVersion,
-            kind: "cask-cli",
-            displayName: binMatched[0]!.name,
-            pids: binMatched.map((m) => m.pid),
-            executablePaths: [
-              ...new Set(binMatched.flatMap((m) => [m.command, m.path])),
-            ],
-          });
-          continue;
-        }
-      }
-
       // Pkg casks can run agents outside their public .app or binary artifacts.
-      // Match exact receipt paths so those processes remain scoped to the cask.
+      // Match exact receipt paths and retain them alongside binary matches so
+      // every observed executable can participate in execution-context checks.
+      const binMatched = binaryNames.length > 0
+        ? matchBinaryNamesToRunningProcesses(binaryNames, runningProcesses)
+        : [];
       const pkgMatched = matchPkgFilesToRunningProcesses(
         pkgFiles,
         runningProcesses
       );
-      if (pkgMatched.length > 0) {
+      const cliMatched = [
+        ...new Map(
+          [...binMatched, ...pkgMatched].map((process) => [process.pid, process]),
+        ).values(),
+      ];
+      if (cliMatched.length > 0) {
         detected.push({
           packageName: pkg.name,
           oldVersion: pkg.installedVersions[0] ?? "unknown",
           newVersion: pkg.currentVersion,
           kind: "cask-cli",
-          displayName: pkgMatched[0]!.name,
-          pids: pkgMatched.map((process) => process.pid),
+          displayName: binMatched[0]?.name ?? pkgMatched[0]!.name,
+          pids: cliMatched.map((process) => process.pid),
           executablePaths: [
-            ...new Set(pkgMatched.flatMap((process) => [process.command, process.path])),
+            ...new Set(cliMatched.flatMap((process) => [process.command, process.path])),
           ],
         });
+        continue;
       }
     }
   }

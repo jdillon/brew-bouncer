@@ -429,6 +429,10 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
         console.log(chalk.dim(`  Skipped ${app.displayName}`));
         restartSkippedCount++;
       }
+    } else if (executionProtected && suppressHomebrewQuit) {
+      console.log(chalk.yellow(
+        `  ${pkg.name}: check for affected processes and restart them manually after Brew Bouncer exits.`,
+      ));
     }
 
     console.log("");
