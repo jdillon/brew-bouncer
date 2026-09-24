@@ -380,8 +380,8 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
       console.error(`brew upgrade ${pkg.name} exited with status ${result.exitCode}.`);
       failCount++;
       if (stoppedBeforeUpgrade && app) await doReopen(app, true);
-      if (executionProtected && app) {
-        renderExecutionUpgradeFailure(app);
+      if (executionProtected && (app || suppressHomebrewQuit)) {
+        renderExecutionUpgradeFailure(pkg.name, app);
       }
       console.log("");
       continue;
@@ -515,9 +515,16 @@ function renderExecutionManualRestart(app: DetectedApp): void {
   ));
 }
 
-function renderExecutionUpgradeFailure(app: DetectedApp): void {
+function renderExecutionUpgradeFailure(
+  packageName: string,
+  app: DetectedApp | undefined,
+): void {
+  const target = app?.displayName ?? packageName;
+  const action = app
+    ? "restart it manually"
+    : "check for affected processes and restart them manually";
   console.log(chalk.yellow(
-    `  ${app.displayName}: Homebrew failed, so Brew Bouncer cannot confirm whether the installation changed. If it did, restart it manually after Brew Bouncer exits.`,
+    `  ${target}: Homebrew failed, so Brew Bouncer cannot confirm whether the installation changed. If it did, ${action} after Brew Bouncer exits.`,
   ));
 }
 
