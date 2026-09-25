@@ -6,8 +6,10 @@
   "ignore": [
     ".DS_Store",
     ".gitignore",
+    ".editorconfig",
     ".gitattributes",
     ".claude/**/*",
+    ".moon/**/*",
     ".idea/**/*",
     "node_modules/**/*",
     "bin/**/*",
@@ -23,6 +25,7 @@
     "**/*.toml",
     "**/*.lock",
     "src/build-info.ts",
+    "scripts/workspace-setup",
     ".github/formula-template.rb",
     "**/*.bun-build"
   ],

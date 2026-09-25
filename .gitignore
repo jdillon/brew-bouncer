@@ -33,6 +33,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+.watchman-cookie-*
 
 # generated build metadata (force-added during releases)
 src/build-info.ts
