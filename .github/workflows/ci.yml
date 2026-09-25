@@ -7,7 +7,7 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,3 +21,22 @@ jobs:
 
       - name: Check
         run: moon run root:prepush
+
+      - name: Build and verify
+        run: moon run root:build-verify
+
+  compile-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: moonrepo/setup-toolchain@v0
+        with:
+          moon-version: '2.5.5'
+
+      - run: ./scripts/workspace-setup
+
+      - name: Compile
+        run: moon run root:compile-check
