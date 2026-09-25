@@ -14,7 +14,10 @@
  * limitations under the License.
  */
 import { expect, test } from "bun:test";
-import { extractPkgAppNames } from "./parser.ts";
+import {
+  extractCaskNonQuitUpgradeDirectives,
+  extractPkgAppNames,
+} from "./parser.ts";
 
 test("extractPkgAppNames finds direct /Applications bundles only", () => {
   expect(extractPkgAppNames([
@@ -22,4 +25,32 @@ test("extractPkgAppNames finds direct /Applications bundles only", () => {
     "/Applications/Karabiner-Elements.app/Contents/MacOS/Karabiner-Elements",
     "/Library/Application Support/org.pqrs/Karabiner-Elements/Karabiner-Menu.app",
   ])).toEqual(["Karabiner-Elements.app"]);
+});
+
+test("extractCaskNonQuitUpgradeDirectives excludes quit and ordinary upgrade signals", () => {
+  expect(extractCaskNonQuitUpgradeDirectives({
+    token: "cmux",
+    version: "1.0",
+    artifacts: [{
+      uninstall: [{
+        launchctl: "application.com.cmuxterm.cua.*",
+        quit: "com.cmuxterm.app",
+        signal: ["TERM", "com.cmuxterm.app"],
+      }],
+    }],
+  })).toEqual(["launchctl"]);
+});
+
+test("extractCaskNonQuitUpgradeDirectives includes signals opted into upgrades", () => {
+  expect(extractCaskNonQuitUpgradeDirectives({
+    token: "example",
+    version: "1.0",
+    artifacts: [{
+      uninstall: [{
+        on_upgrade: ["signal"],
+        signal: ["TERM", "com.example.app"],
+        script: { executable: "uninstall.sh" },
+      }],
+    }],
+  })).toEqual(["script", "signal"]);
 });

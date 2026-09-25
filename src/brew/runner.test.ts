@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 import { expect, test } from "bun:test";
-import { formatExecFailure } from "./runner.ts";
+import { brewUpgradeArgs, formatExecFailure } from "./runner.ts";
 
 test("formatExecFailure includes stderr", () => {
   expect(formatExecFailure("brew update", {
@@ -38,4 +38,13 @@ test("formatExecFailure always provides an exit-code reason", () => {
     stderr: "",
     exitCode: 3,
   })).toBe("brew update exited with status 3 without an error message.");
+});
+
+test("brewUpgradeArgs adds --no-quit only when requested", () => {
+  expect(brewUpgradeArgs("cmux")).toEqual(["upgrade", "cmux"]);
+  expect(brewUpgradeArgs("cmux", { noQuit: true })).toEqual([
+    "upgrade",
+    "--no-quit",
+    "cmux",
+  ]);
 });
