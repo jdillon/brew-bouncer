@@ -1,0 +1,20 @@
+$schema: "https://moonrepo.dev/schemas/workspace.json"
+
+versionConstraint: "2.5.5"
+
+projects:
+  root: "."
+
+defaultProject: "root"
+
+hasher:
+  ignorePatterns:
+    - ".claude/rules"
+
+vcs:
+  defaultBranch: "main"
+  provider: "github"
+  sync: true
+  hooks:
+    pre-push:
+      - "moon run root:prepush"

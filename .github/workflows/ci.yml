@@ -11,20 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: moonrepo/setup-toolchain@v0
         with:
-          bun-version: latest
+          moon-version: '2.5.5'
 
-      - run: bun install
+      - run: ./scripts/workspace-setup
 
-      - name: License headers
-        run: bun run license:check
-
-      - name: Stamp build info
-        run: bun run build:info
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Test compile
-        run: bun build --compile src/index.ts --outfile /tmp/brew-bouncer-test
+      - name: Check
+        run: moon run root:prepush

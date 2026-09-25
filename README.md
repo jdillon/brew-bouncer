@@ -72,13 +72,14 @@ and quarantine-removal prompt.
 
 ## Building from source
 
-Requires [Bun](https://bun.sh).
+Requires [Moon](https://moonrepo.dev). The repository pins Bun; setup installs
+that version and dependencies.
 
 ```bash
-bun install
-bun run typecheck
-bun run build          # native binary at dist/brew-bouncer
-bun run dev            # run from source
+moon run root:setup
+moon run root:check
+moon run root:build-verify  # native macOS binary at dist/brew-bouncer
+moon run root:cli -- --help  # run source CLI with pinned Bun
 ```
 
 ## License

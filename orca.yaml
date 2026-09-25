@@ -1,0 +1,5 @@
+# https://orca.computer — per-worktree hooks
+# Orca reads this file from the primary checkout, so this hook takes effect
+# after the change lands there. The script runs in the target worktree.
+scripts:
+  setup: ./scripts/workspace-setup

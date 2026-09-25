@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${repo_root}"
+
+for local_name in AGENTS.local.md CLAUDE.local.md; do
+  if ! git check-ignore -v "${local_name}"; then
+    echo "Expected ${local_name} to be gitignored" >&2
+    exit 1
+  fi
+done
+
+if [[ ! -f AGENTS.md || -L AGENTS.md ]]; then
+  echo "Expected a regular AGENTS.md" >&2
+  exit 1
+fi
+
+require_link() {
+  local link_path="${1}"
+  local target="${2}"
+  if [[ ! -L "${link_path}" || "$(readlink "${link_path}")" != "${target}" || ! -e "${link_path}" ]]; then
+    echo "Expected ${link_path} -> ${target}" >&2
+    exit 1
+  fi
+}
+
+require_link CLAUDE.md AGENTS.md
+require_link .claude/rules ../.agents/rules
+
+if [[ -d .agents/skills ]]; then
+  require_link .claude/skills ../.agents/skills
+fi
+
+if [[ -e AGENTS.local.md || -L AGENTS.local.md ]]; then
+  if [[ ! -f AGENTS.local.md || -L AGENTS.local.md ]]; then
+    echo "Expected a regular AGENTS.local.md" >&2
+    exit 1
+  fi
+else
+  : > AGENTS.local.md
+fi
+
+if [[ -e CLAUDE.local.md || -L CLAUDE.local.md ]]; then
+  require_link CLAUDE.local.md AGENTS.local.md
+else
+  ln -s AGENTS.local.md CLAUDE.local.md
+fi
+require_link CLAUDE.local.md AGENTS.local.md
+
+if ! command -v moon >/dev/null; then
+  echo "moon is required to provision this workspace" >&2
+  exit 1
+fi
+
+moon setup
+moon run root:install
