@@ -18,7 +18,6 @@ tasks:
       - "/package.json"
     options:
       cache: false
-      runInCI: false
 
   cli:
     command: "bun run dev"
@@ -52,7 +51,6 @@ tasks:
       - "/scripts/stamp-build-info.ts"
     options:
       cache: false
-      runInCI: false
 
   test:
     command: "bun test"
@@ -62,7 +60,6 @@ tasks:
       - "/src/**/*"
     options:
       cache: false
-      runInCI: false
 
   typecheck:
     command: "bun run typecheck"
@@ -76,7 +73,6 @@ tasks:
       - "/src/**/*"
     options:
       cache: false
-      runInCI: false
 
   license:
     command: "bun run license:check"
@@ -86,7 +82,6 @@ tasks:
       - "/scripts/**/*.ts"
     options:
       cache: false
-      runInCI: false
 
   compile-check:
     command: "bun build --compile src/index.ts --outfile dist/brew-bouncer-linux-check"
@@ -101,7 +96,6 @@ tasks:
     options:
       cache: false
       os: "linux"
-      runInCI: false
 
   check:
     deps:
@@ -112,7 +106,6 @@ tasks:
     inputs: []
     options:
       cache: false
-      runInCI: false
 
   build:
     command: "bun run build"
@@ -128,7 +121,6 @@ tasks:
     options:
       cache: false
       os: "macos"
-      runInCI: false
 
   build-verify:
     script: "./dist/brew-bouncer --version && ./dist/brew-bouncer --help"
@@ -139,7 +131,6 @@ tasks:
     options:
       cache: false
       os: "macos"
-      runInCI: false
 
   prepush:
     deps:
@@ -147,7 +138,6 @@ tasks:
     inputs: []
     options:
       cache: false
-      runInCI: false
 
   release-build:
     script: "bun run build:info -- --release && bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile dist/brew-bouncer-darwin-arm64 && bun build --compile --target=bun-darwin-x64 src/index.ts --outfile dist/brew-bouncer-darwin-x64"
@@ -164,7 +154,6 @@ tasks:
     options:
       cache: false
       os: "macos"
-      runInCI: false
 
   release-verify:
     command: "./dist/brew-bouncer-darwin-arm64 --version"
@@ -175,4 +164,3 @@ tasks:
     options:
       cache: false
       os: "macos"
-      runInCI: false
