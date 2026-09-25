@@ -13,28 +13,17 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          fetch-depth: 0
 
-      - run: bun install
+      - uses: moonrepo/setup-toolchain@v0
+        with:
+          moon-version: '2.5.5'
 
-      - name: Stamp build info
-        run: bun run build:info -- --release
+      - run: ./scripts/workspace-setup
 
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Build native binaries
-        run: |
-          bun build --compile --target=bun-darwin-arm64 src/index.ts \
-            --outfile dist/brew-bouncer-darwin-arm64
-          bun build --compile --target=bun-darwin-x64 src/index.ts \
-            --outfile dist/brew-bouncer-darwin-x64
-
-      - name: Verify binary
-        run: dist/brew-bouncer-darwin-arm64 --version
+      - name: Build and verify native binaries
+        run: moon run root:release-verify
 
       - uses: actions/upload-artifact@v4
         with:

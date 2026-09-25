@@ -1,0 +1,166 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+id: "root"
+layer: "application"
+
+workspace:
+  inheritedTasks:
+    include: []
+
+toolchains:
+  default: ["javascript", "bun"]
+
+tasks:
+  install:
+    command: "bun install --frozen-lockfile"
+    inputs:
+      - "/bun.lock"
+      - "/package.json"
+    options:
+      cache: false
+
+  cli:
+    command: "bun run dev"
+    inputs:
+      - "/bun.lock"
+      - "/package.json"
+      - "/src/**/*"
+    options:
+      interactive: true
+      runInCI: false
+
+  setup:
+    command: "./scripts/workspace-setup"
+    inputs:
+      - "/.agents/rules/**/*.md"
+      - "/.gitignore"
+      - "/.moon/**/*.yml"
+      - "/AGENTS.md"
+      - "/bun.lock"
+      - "/package.json"
+      - "/scripts/workspace-setup"
+    options:
+      cache: false
+      runInCI: false
+      runFromWorkspaceRoot: true
+
+  build-info:
+    command: "bun run build:info"
+    inputs:
+      - "/package.json"
+      - "/scripts/stamp-build-info.ts"
+    options:
+      cache: false
+
+  test:
+    command: "bun test"
+    inputs:
+      - "/bun.lock"
+      - "/package.json"
+      - "/src/**/*"
+    options:
+      cache: false
+
+  typecheck:
+    command: "bun run typecheck"
+    deps:
+      - "~:build-info"
+    inputs:
+      - "/bun.lock"
+      - "/package.json"
+      - "/tsconfig.json"
+      - "/scripts/stamp-build-info.ts"
+      - "/src/**/*"
+    options:
+      cache: false
+
+  license:
+    command: "bun run license:check"
+    inputs:
+      - "/license-checker.config.json"
+      - "/src/**/*"
+      - "/scripts/**/*.ts"
+    options:
+      cache: false
+
+  compile-check:
+    command: "bun build --compile src/index.ts --outfile dist/brew-bouncer-linux-check"
+    deps:
+      - "~:build-info"
+    inputs:
+      - "/bun.lock"
+      - "/package.json"
+      - "/src/**/*"
+    outputs:
+      - "/dist/brew-bouncer-linux-check"
+    options:
+      cache: false
+      os: "linux"
+
+  check:
+    deps:
+      - "~:test"
+      - "~:typecheck"
+      - "~:license"
+      - "~:compile-check"
+    inputs: []
+    options:
+      cache: false
+
+  build:
+    command: "bun run build"
+    deps:
+      - "~:check"
+    inputs:
+      - "/bun.lock"
+      - "/package.json"
+      - "/scripts/stamp-build-info.ts"
+      - "/src/**/*"
+    outputs:
+      - "/dist/brew-bouncer"
+    options:
+      cache: false
+      os: "macos"
+
+  build-verify:
+    script: "./dist/brew-bouncer --version && ./dist/brew-bouncer --help"
+    deps:
+      - "~:build"
+    inputs:
+      - "/dist/brew-bouncer"
+    options:
+      cache: false
+      os: "macos"
+
+  prepush:
+    deps:
+      - "~:check"
+    inputs: []
+    options:
+      cache: false
+
+  release-build:
+    script: "bun run build:info -- --release && bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile dist/brew-bouncer-darwin-arm64 && bun build --compile --target=bun-darwin-x64 src/index.ts --outfile dist/brew-bouncer-darwin-x64"
+    deps:
+      - "~:check"
+    inputs:
+      - "/bun.lock"
+      - "/package.json"
+      - "/scripts/stamp-build-info.ts"
+      - "/src/**/*"
+    outputs:
+      - "/dist/brew-bouncer-darwin-arm64"
+      - "/dist/brew-bouncer-darwin-x64"
+    options:
+      cache: false
+      os: "macos"
+
+  release-verify:
+    command: "./dist/brew-bouncer-darwin-arm64 --version"
+    deps:
+      - "~:release-build"
+    inputs:
+      - "/dist/brew-bouncer-darwin-arm64"
+    options:
+      cache: false
+      os: "macos"
