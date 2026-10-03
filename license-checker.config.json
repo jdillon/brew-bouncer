@@ -14,6 +14,7 @@
     "node_modules/**/*",
     "bin/**/*",
     "dist/**/*",
+    "scripts/**/*",
     "tmp/**/*",
     "sandbox/**/*",
     "docs/**/*",
@@ -25,7 +26,6 @@
     "**/*.toml",
     "**/*.lock",
     "src/build-info.ts",
-    "scripts/workspace-setup",
     ".github/formula-template.rb",
     "**/*.bun-build"
   ],

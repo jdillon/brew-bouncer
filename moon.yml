@@ -79,17 +79,17 @@ tasks:
     inputs:
       - "/license-checker.config.json"
       - "/src/**/*"
-      - "/scripts/**/*.ts"
     options:
       cache: false
 
   compile-check:
-    command: "bun build --compile src/index.ts --outfile dist/brew-bouncer-linux-check"
+    script: "trap './scripts/clean-bun-build-artifacts' EXIT; bun build --compile src/index.ts --outfile dist/brew-bouncer-linux-check"
     deps:
       - "~:build-info"
     inputs:
       - "/bun.lock"
       - "/package.json"
+      - "/scripts/clean-bun-build-artifacts"
       - "/src/**/*"
     outputs:
       - "/dist/brew-bouncer-linux-check"
@@ -108,18 +108,20 @@ tasks:
       cache: false
 
   build:
-    command: "bun run build"
+    script: "trap './scripts/clean-bun-build-artifacts' EXIT; bun run build"
     deps:
       - "~:check"
     inputs:
       - "/bun.lock"
       - "/package.json"
+      - "/scripts/clean-bun-build-artifacts"
       - "/scripts/stamp-build-info.ts"
       - "/src/**/*"
     outputs:
       - "/dist/brew-bouncer"
     options:
       cache: false
+      mutex: "bun-compile"
       os: "macos"
 
   build-verify:
@@ -140,12 +142,13 @@ tasks:
       cache: false
 
   release-build:
-    script: "bun run build:info -- --release && bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile dist/brew-bouncer-darwin-arm64 && bun build --compile --target=bun-darwin-x64 src/index.ts --outfile dist/brew-bouncer-darwin-x64"
+    script: "trap './scripts/clean-bun-build-artifacts' EXIT; bun run build:info -- --release && bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile dist/brew-bouncer-darwin-arm64 && bun build --compile --target=bun-darwin-x64 src/index.ts --outfile dist/brew-bouncer-darwin-x64"
     deps:
       - "~:check"
     inputs:
       - "/bun.lock"
       - "/package.json"
+      - "/scripts/clean-bun-build-artifacts"
       - "/scripts/stamp-build-info.ts"
       - "/src/**/*"
     outputs:
@@ -153,6 +156,7 @@ tasks:
       - "/dist/brew-bouncer-darwin-x64"
     options:
       cache: false
+      mutex: "bun-compile"
       os: "macos"
 
   release-verify:
