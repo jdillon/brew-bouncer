@@ -62,7 +62,27 @@ interface UpgradeDiagnostic {
   message: string;
 }
 
-export async function upgrade(options: UpgradeOptions): Promise<void> {
+const defaultUpgradeDependencies = {
+  brewUpdate, brewOutdated, brewUpgrade, brewInfoJson, exec,
+  detectRunningUpgrades, inspectExecutionContext, loadConfig,
+  enumeratePackageExecutables, isQuarantined,
+  confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart,
+  confirmQuarantinePolicy, confirmUnquarantine,
+  doQuit, doReopen, doRestart, doUnquarantine,
+};
+
+export async function upgrade(
+  options: UpgradeOptions,
+  dependencyOverrides: Partial<typeof defaultUpgradeDependencies> = {},
+): Promise<void> {
+  const {
+    brewUpdate, brewOutdated, brewUpgrade, brewInfoJson, exec,
+    detectRunningUpgrades, inspectExecutionContext, loadConfig,
+    enumeratePackageExecutables, isQuarantined,
+    confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart,
+    confirmQuarantinePolicy, confirmUnquarantine,
+    doQuit, doReopen, doRestart, doUnquarantine,
+  } = { ...defaultUpgradeDependencies, ...dependencyOverrides };
   log.debug("brew-bouncer {version}", { version: getVersion() });
   const config = await loadConfig();
 
@@ -161,7 +181,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
   // Step 5: Detect running processes BEFORE showing preview
   const s3 = spinner("Checking running processes...");
   const preDetected = await detectRunningUpgrades(targets, (msg) => s3.update(msg));
-  const detectedMap = new Map(preDetected.map((d) => [d.packageName, d]));
+  let detectedMap = new Map(preDetected.map((d) => [d.packageName, d]));
   s3.update("checking Brew Bouncer execution context");
   const previewExecutionContext = await inspectExecutionContext();
   const previewExecutionAssessments = new Map(
@@ -234,6 +254,20 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     }
   }
 
+  // Confirmation can remain open while the user closes or launches apps.
+  // Reuse the preview detector so restart policy reflects the selected targets now.
+  const refreshSpinner = spinner("Rechecking running processes...");
+  const refreshed = await detectRunningUpgrades(targets, (msg) => refreshSpinner.update(msg));
+  detectedMap = new Map(refreshed.map((app) => [app.packageName, app]));
+  const refreshedContext = await inspectExecutionContext();
+  const refreshedAssessments = new Map(refreshed.map((app) => [
+    app.packageName, assessExecutionTarget(app, refreshedContext),
+  ]));
+  refreshSpinner.done(`${refreshed.length} running app(s) currently affected`);
+  console.log(chalk.bold("\nCurrent running status:\n"));
+  console.log(renderPackageTable(targets, detectedMap, refreshedAssessments));
+  renderExecutionContextPreview(targets, detectedMap, refreshedAssessments);
+
   // Step 7: Ask restart policy upfront (only when running apps detected in selected targets)
   const affectedCount = targets.filter((pkg) => {
     const app = detectedMap.get(pkg.name);
@@ -241,8 +275,8 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     return planExecutionSafety(
       pkg,
       app,
-      previewExecutionContext,
-      previewExecutionAssessments.get(pkg.name),
+      refreshedContext,
+      refreshedAssessments.get(pkg.name),
     ).allowAutomaticLifecycle;
   }).length;
   let restartPolicy: RestartPolicy = "no";
@@ -294,7 +328,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
         chalk.dim(` ${pkg.installedVersions[0]} → ${pkg.currentVersion}`)
     );
 
-    const app = detectedMap.get(pkg.name);
+    let app = (await detectRunningUpgrades([pkg]))[0];
     const decisionContext = await inspectExecutionContext();
     const decisionAssessment = app
       ? assessExecutionTarget(app, decisionContext)
@@ -306,6 +340,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
       decisionAssessment,
     );
     let restartRequested = false;
+    let restartPrompted = false;
     if (
       app &&
       decisionSafety.allowAutomaticLifecycle &&
@@ -315,6 +350,7 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
       if (restartAll) {
         restartRequested = true;
       } else {
+        restartPrompted = true;
         const choice = await confirmRestart(app.displayName);
         if (choice === "all") {
           restartAll = true;
@@ -329,6 +365,18 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     // check says host/unknown, retain protection for this package; moving from
     // protected to apparently unrelated is not enough evidence to start an
     // automatic quit that the user was never asked to approve.
+    // Refresh again after a per-app prompt; the first check already follows
+    // global prompts and earlier upgrades. GUI quit also scans before sending
+    // any quit request to catch an app that closed during these safety checks.
+    const promptedApp = app;
+    if (restartPrompted) app = (await detectRunningUpgrades([pkg]))[0];
+    // Approval for one GUI bundle does not authorize lifecycle actions on a
+    // different bundle or a service that appeared while the prompt was open.
+    if (app && promptedApp && (app.kind !== promptedApp.kind ||
+      app.bundlePath !== promptedApp.bundlePath || app.displayName !== promptedApp.displayName)) {
+      restartRequested = false;
+    }
+    if (!app) restartRequested = false;
     const upgradeContext = await inspectExecutionContext();
     const upgradeAssessment = app
       ? assessExecutionTarget(app, upgradeContext)
@@ -364,16 +412,31 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     if (restartRequested && app?.kind === "cask-gui") {
       const quitStatus = await doQuit(app);
       stoppedBeforeUpgrade = quitStatus === "stopped";
-      if (!stoppedBeforeUpgrade) {
+      if (quitStatus === "already-stopped") {
+        app = undefined;
+        restartRequested = false;
+      } else if (!stoppedBeforeUpgrade) {
         failCount++;
         console.log(chalk.yellow("  Upgrade skipped because the app did not quit"));
-        if (quitStatus === "unknown") await doReopen(app);
+        if (quitStatus === "unknown") {
+          console.log(chalk.yellow("  Running state could not be verified; check the app manually"));
+        }
         console.log("");
         continue;
       }
     }
 
-    const result = await brewUpgrade(pkg.name, { noQuit: suppressHomebrewQuit });
+    let result: Awaited<ReturnType<typeof brewUpgrade>>;
+    try {
+      result = await brewUpgrade(pkg.name, { noQuit: suppressHomebrewQuit });
+    } catch (error) {
+      failCount++;
+      console.error(`brew upgrade ${pkg.name} could not complete: ${error instanceof Error ? error.message : String(error)}`);
+      if (stoppedBeforeUpgrade && app) await doReopen(app, true);
+      if (executionProtected) renderExecutionUpgradeFailure(pkg.name, app);
+      console.log("");
+      continue;
+    }
     diagnostics.push(...collectUpgradeDiagnostics(pkg.name, result.stdout, result.stderr));
 
     if (result.exitCode !== 0) {
@@ -421,6 +484,21 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
       } else if (restartPolicy === "no") {
         restartSkippedCount++;
       } else if (restartRequested) {
+        if (app.kind === "formula-service") {
+          const current = (await detectRunningUpgrades([pkg]))[0];
+          if (current?.kind !== "formula-service") {
+            console.log(chalk.dim(`  ${app.displayName}: service is no longer running; leaving it stopped`));
+            console.log("");
+            continue;
+          }
+          const context = await inspectExecutionContext();
+          if (!planExecutionSafety(pkg, current, context, assessExecutionTarget(current, context)).allowAutomaticLifecycle) {
+            renderExecutionManualRestart(current);
+            manualRestartCount++;
+            console.log("");
+            continue;
+          }
+        }
         const ok = stoppedBeforeUpgrade
           ? await doReopen(app, true)
           : await doRestart(app);
@@ -546,7 +624,9 @@ async function doRestart(app: DetectedApp): Promise<boolean> {
 async function doQuit(app: DetectedApp): Promise<GuiQuitStatus> {
   process.stdout.write(`  ${chalk.cyan("⟳")} Quitting ${chalk.bold(app.displayName)}... `);
   const status = await quitGuiApp(app);
-  console.log(status === "stopped" ? chalk.green("done") : chalk.red("failed"));
+  console.log(status === "already-stopped"
+    ? chalk.dim("already closed; will stay closed")
+    : status === "stopped" ? chalk.green("done") : chalk.red("failed"));
   return status;
 }
 

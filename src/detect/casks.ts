@@ -67,8 +67,8 @@ export async function getRunningApps(): Promise<RunningApp[]> {
  * and as a fallback when a cask-gui app was supplemented via osascript
  * (i.e. detection found the app by name but had no PIDs).
  */
-export async function pidsInBundle(bundlePath: string): Promise<number[]> {
-  const apps = await getAppsFromProcessList();
+export async function pidsInBundle(bundlePath: string, includeHelpers = true): Promise<number[]> {
+  const apps = await getAppsFromProcessList(includeHelpers);
   const prefix = bundlePath.endsWith("/") ? bundlePath : bundlePath + "/";
   return apps
     .filter((a) => a.bundlePath !== undefined && (a.bundlePath === bundlePath || a.bundlePath.startsWith(prefix)))
@@ -171,8 +171,8 @@ async function getGuiAppNames(): Promise<string[]> {
  *   /Applications/1Password.app/Contents/MacOS/1Password
  *   /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/...
  */
-async function getAppsFromProcessList(): Promise<RunningApp[]> {
-  const proc = Bun.spawn(["ps", "-ww", "-A", "-o", "pid=,comm="], {
+async function getAppsFromProcessList(includeHelpers = true): Promise<RunningApp[]> {
+  const proc = Bun.spawn(["ps", "-ww", "-A", "-o", "pid=,state=,comm="], {
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -186,25 +186,33 @@ async function getAppsFromProcessList(): Promise<RunningApp[]> {
     throw new Error(`ps failed while scanning app bundles: ${stderr.trim()}`);
   }
 
+  return parseRunningApps(stdout, includeHelpers);
+}
+
+export function parseRunningApps(processList: string, includeHelpers = true): RunningApp[] {
   // Capture only the *outermost* .app bundle. A path like
   //   /Applications/Foo.app/Contents/Frameworks/Foo Helper.app/Contents/MacOS/...
   // should attribute to Foo.app, not "Foo Helper.app".
   const byBundlePath = new Map<string, RunningApp>();
 
-  for (const line of stdout.split("\n")) {
+  for (const line of processList.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
-    const spaceIdx = trimmed.indexOf(" ");
-    if (spaceIdx === -1) continue;
-
-    const pidStr = trimmed.slice(0, spaceIdx);
-    const command = trimmed.slice(spaceIdx + 1);
-    const pid = Number.parseInt(pidStr, 10);
-    if (!Number.isFinite(pid)) continue;
+    const match = trimmed.match(/^(\d+)\s+(\S+)\s+(.+)$/);
+    if (!match || match[2]!.startsWith("Z")) continue;
+    const pid = Number.parseInt(match[1]!, 10);
+    const command = match[3]!;
 
     const bundlePath = extractOutermostAppBundlePath(command);
     if (!bundlePath) continue;
+    const relativePath = command.slice(bundlePath.length);
+    // Exclude only recognizable helper locations. An alternate executable
+    // elsewhere in a launcher-based bundle remains evidence of a live app.
+    if (!includeHelpers && (
+      relativePath.startsWith("/Contents/XPCServices/") ||
+      /^\/Contents\/Frameworks\/[^/]* Helper[^/]*\.app\//.test(relativePath)
+    )) continue;
     const bundleName = bundlePath.split("/").pop()!;
 
     let app = byBundlePath.get(bundlePath);
@@ -249,7 +257,8 @@ export function matchCaskToRunningApps(
         );
         matched.push(app);
         found = true;
-        break; // one match per artifact is enough
+        // Preserve same-name installs: another path may still be running or
+        // may host the current command even if the first match is closed.
       }
     }
 

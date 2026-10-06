@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 import { expect, mock, test } from "bun:test";
+import { createGuiProcessScanner } from "./detect/gui-processes.ts";
 import {
-  createGuiProcessScanner,
   quitGuiApp,
   waitForFreshStableProcesses,
   waitForNoProcesses,
@@ -67,7 +67,7 @@ test("falls back to the bundle when the main executable cannot be resolved", asy
   expect(scanExecutable).not.toHaveBeenCalled();
 });
 
-test("falls back to the bundle when the declared main path is not observed", async () => {
+test("retains bundle tracking when the declared executable is an absent launcher", async () => {
   const resolveMainExecutable = mock(async () =>
     "/Applications/Scripted.app/Contents/MacOS/launcher"
   );
@@ -82,6 +82,38 @@ test("falls back to the bundle when the declared main path is not observed", asy
 
   expect(scanner.mode).toBe("bundle");
   expect(await scanner.scan()).toEqual([301]);
+  expect(scanBundle).toHaveBeenCalled();
+});
+
+test("excludes known helpers when an absent main has no alternate app process", async () => {
+  const scanBundle = mock(async () => [301]);
+  const scanner = await createGuiProcessScanner([301], "/Applications/Example.app", {
+    resolveMainExecutable: async () => "/Applications/Example.app/Contents/MacOS/Example",
+    scanExecutable: async () => [],
+    scanBundle,
+    scanAppBundle: async () => [],
+  });
+  expect(await scanner.scan()).toEqual([]);
+  expect(scanBundle).not.toHaveBeenCalled();
+});
+
+test("retains alternate app processes while ignoring known helper locations", async () => {
+  const scanner = await createGuiProcessScanner([301, 302], "/Applications/Scripted.app", {
+    resolveMainExecutable: async () => "/Applications/Scripted.app/Contents/MacOS/launcher",
+    scanExecutable: async () => [],
+    scanBundle: async () => [301, 302],
+    scanAppBundle: async () => [302],
+  });
+  expect(await scanner.scan()).toEqual([302]);
+});
+
+test("a name-only detection cannot send a quit request", async () => {
+  const requestQuit = mock(async () => ({ stderr: "", exitCode: 0 }));
+  expect(await quitGuiApp({
+    packageName: "example", oldVersion: "1", newVersion: "2",
+    kind: "cask-gui", displayName: "Example.app", pids: [],
+  }, { requestQuit })).toBe("unknown");
+  expect(requestQuit).not.toHaveBeenCalled();
 });
 
 test("checks once more at the shutdown timeout boundary", async () => {
@@ -94,7 +126,7 @@ test("checks once more at the shutdown timeout boundary", async () => {
 });
 
 test("accepts a quit-request error when process shutdown is verified", async () => {
-  const scan = mock(async () => []);
+  const scan = mock(async () => [101]);
   const waitForExit = mock(async () => []);
   const sleep = mock(async () => {});
 
@@ -174,6 +206,40 @@ test("reports an unknown quit state when shutdown cannot be inspected", async ()
   );
 
   expect(quit).toBe("unknown");
+});
+
+test("does not send a quit request for an app that has already closed", async () => {
+  const requestQuit = mock(async () => ({ stderr: "", exitCode: 0 }));
+  const waitForExit = mock(async () => []);
+  const sleep = mock(async () => {});
+  const status = await quitGuiApp({
+    packageName: "example", oldVersion: "1", newVersion: "2",
+    kind: "cask-gui", displayName: "Example.app",
+    bundlePath: "/Applications/Example.app", pids: [101],
+  }, {
+    createScanner: async () => ({ mode: "main", scan: async () => [] }),
+    requestQuit, waitForExit, sleep,
+  });
+  expect(status).toBe("already-stopped");
+  expect(requestQuit).not.toHaveBeenCalled();
+  expect(waitForExit).not.toHaveBeenCalled();
+  expect(sleep).not.toHaveBeenCalled();
+});
+
+test("does not send a quit request when the initial process scan fails", async () => {
+  const requestQuit = mock(async () => ({ stderr: "", exitCode: 0 }));
+  const status = await quitGuiApp({
+    packageName: "example", oldVersion: "1", newVersion: "2",
+    kind: "cask-gui", displayName: "Example.app",
+    bundlePath: "/Applications/Example.app", pids: [101],
+  }, {
+    createScanner: async () => ({ mode: "main", scan: async () => {
+      throw new Error("ps failed");
+    } }),
+    requestQuit,
+  });
+  expect(status).toBe("unknown");
+  expect(requestQuit).not.toHaveBeenCalled();
 });
 
 test("does not count a terminating PID as a successful relaunch", async () => {
@@ -275,4 +341,19 @@ test("rejects a fresh process that exits before becoming stable", async () => {
 
   expect(launched).toBe(false);
   expect(retryLaunch).toHaveBeenCalledTimes(1);
+});
+
+test("an app closed before AppleScript runs is not credited as stopped by this invocation", async () => {
+  const waitForExit = mock(async () => []);
+  const requestQuit = mock(async () => ({ exitCode: 0, stderr: "", alreadyStopped: true }));
+  const status = await quitGuiApp({
+    packageName: "example", oldVersion: "1", newVersion: "2", kind: "cask-gui",
+    displayName: "Example.app", bundlePath: "/Applications/Example.app", pids: [101],
+  }, {
+    createScanner: async () => ({ mode: "main", scan: async () => [101] }),
+    requestQuit, waitForExit,
+  });
+  expect(status).toBe("already-stopped");
+  expect(requestQuit).toHaveBeenCalledWith("/Applications/Example.app");
+  expect(waitForExit).not.toHaveBeenCalled();
 });

@@ -40,6 +40,7 @@ import {
   matchFormulaToRunningProcesses,
   matchFormulaToRunningServices,
 } from "./formulae.ts";
+import { createGuiProcessScanner } from "./gui-processes.ts";
 import { pool } from "../pool.ts";
 import { getLogger } from "@logtape/logtape";
 
@@ -68,10 +69,20 @@ export interface DetectedApp {
 
 export type ProgressCallback = (message: string) => void;
 
+const defaultDetectionDependencies = {
+  getRunningApps, getRunningProcesses, brewServicesList, brewInfoJson,
+  pkgutilFiles, brewList, createGuiProcessScanner,
+};
+
 export async function detectRunningUpgrades(
   packages: OutdatedPackage[],
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  dependencyOverrides: Partial<typeof defaultDetectionDependencies> = {},
 ): Promise<DetectedApp[]> {
+  const {
+    getRunningApps, getRunningProcesses, brewServicesList, brewInfoJson,
+    pkgutilFiles, brewList, createGuiProcessScanner,
+  } = { ...defaultDetectionDependencies, ...dependencyOverrides };
   const detected: DetectedApp[] = [];
 
   const casks = packages.filter((p) => p.type === "cask");
@@ -126,8 +137,15 @@ export async function detectRunningUpgrades(
       }
 
       const matched = matchCaskToRunningApps(appNames, runningApps);
+      const bundleProcesses = runningProcesses.filter((process) =>
+        matched.some((app) => app.bundlePath && (
+          process.command.startsWith(`${app.bundlePath}/`) ||
+          process.path.startsWith(`${app.bundlePath}/`)
+        ))
+      );
 
-      if (matched.length > 0) {
+      let liveGui: DetectedApp | undefined;
+      for (const primary of [...matched].sort((a, b) => Number(Boolean(b.bundlePath)) - Number(Boolean(a.bundlePath)))) {
         // Pick one concrete bundle to restart, then keep only PIDs that
         // belong to that same bundle. A cask may declare multiple `.app`
         // artifacts but the restart layer can only target a single
@@ -136,23 +154,35 @@ export async function detectRunningUpgrades(
         // Prefer a match that has a path discovered via ps; osascript-only
         // supplements have no bundlePath and would defeat bundle-path
         // verification.
-        const primary =
-          matched.find((m) => m.bundlePath !== undefined) ?? matched[0]!;
         const sameBundle = matched.filter((m) =>
           primary.bundlePath
             ? m.bundlePath === primary.bundlePath
             : m.bundleName === primary.bundleName
         );
-        const pids = [...new Set(sameBundle.flatMap((m) => m.pids))];
-        detected.push({
-          packageName: pkg.name,
-          oldVersion: pkg.installedVersions[0] ?? "unknown",
-          newVersion: pkg.currentVersion,
-          kind: "cask-gui",
-          displayName: primary.bundleName,
-          pids,
-          bundlePath: primary.bundlePath,
-        });
+        let pids = [...new Set(sameBundle.flatMap((m) => m.pids))];
+        if (primary.bundlePath) {
+          const scanner = await createGuiProcessScanner(pids, primary.bundlePath);
+          pids = await scanner.scan();
+        }
+        if (pids.length > 0 || !primary.bundlePath) {
+          liveGui = {
+            packageName: pkg.name,
+            oldVersion: pkg.installedVersions[0] ?? "unknown",
+            newVersion: pkg.currentVersion,
+            kind: "cask-gui",
+            displayName: primary.bundleName,
+            pids,
+            bundlePath: primary.bundlePath,
+            // Restart just this GUI, but retain sibling/helper identities for
+            // execution-context protection of the entire selected package.
+            executablePaths: [...new Set(bundleProcesses.flatMap((process) => [process.command, process.path]))],
+          };
+          break;
+        }
+        // The GUI is closed; its CLI artifacts may still be running.
+      }
+      if (liveGui) {
+        detected.push(liveGui);
         continue;
       }
 
@@ -177,17 +207,21 @@ export async function detectRunningUpgrades(
       );
       const cliMatched = [
         ...new Map(
-          [...binMatched, ...pkgMatched].map((process) => [process.pid, process]),
+          [...binMatched, ...pkgMatched, ...bundleProcesses].map((process) => [process.pid, process]),
         ).values(),
       ];
       if (cliMatched.length > 0) {
+        // Keep the exact bundle identity even when only its helpers remain:
+        // those helpers may still host Brew Bouncer's execution context.
+        const bundlePaths = [...new Set(matched.flatMap((app) => app.bundlePath ? [app.bundlePath] : []))];
         detected.push({
           packageName: pkg.name,
           oldVersion: pkg.installedVersions[0] ?? "unknown",
           newVersion: pkg.currentVersion,
           kind: "cask-cli",
-          displayName: binMatched[0]?.name ?? pkgMatched[0]!.name,
+          displayName: binMatched[0]?.name ?? cliMatched[0]!.name,
           pids: cliMatched.map((process) => process.pid),
+          bundlePath: bundlePaths.length === 1 ? bundlePaths[0] : undefined,
           executablePaths: [
             ...new Set(cliMatched.flatMap((process) => [process.command, process.path])),
           ],

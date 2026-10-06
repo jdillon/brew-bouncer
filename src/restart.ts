@@ -13,12 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { createGuiProcessScanner, type GuiProcessScanner } from "./detect/gui-processes.ts";
 import type { DetectedApp } from "./detect/matcher.ts";
-import {
-  pidsForExecutable,
-  pidsInBundle,
-  resolveBundleMainExecutable,
-} from "./detect/casks.ts";
 import { exec } from "./brew/runner.ts";
 import { log } from "./logger.ts";
 
@@ -32,6 +28,7 @@ const LAUNCH_RETRY_DELAY_MS = 5_000;
 export async function restartApp(app: DetectedApp): Promise<boolean> {
   switch (app.kind) {
     case "cask-gui":
+      // Only reopen an app this call actually stopped.
       if ((await quitGuiApp(app)) !== "stopped") return false;
       return reopenGuiApp(app);
     case "formula-service":
@@ -42,7 +39,7 @@ export async function restartApp(app: DetectedApp): Promise<boolean> {
   }
 }
 
-export type GuiQuitStatus = "stopped" | "running" | "unknown";
+export type GuiQuitStatus = "stopped" | "already-stopped" | "running" | "unknown";
 
 interface QuitGuiAppDependencies {
   createScanner: typeof createGuiProcessScanner;
@@ -72,7 +69,12 @@ export async function quitGuiApp(
 
   let scanner: GuiProcessScanner;
   try {
+    if (detectedPids.length === 0 && !bundlePath) {
+      // A name-only detection cannot prove the app is still running.
+      return "unknown";
+    }
     scanner = await dependencies.createScanner(detectedPids, bundlePath);
+    if ((await scanner.scan()).length === 0) return "already-stopped";
   } catch (error) {
     log.error("Cannot inspect processes for {app}: {error}", {
       app: appName,
@@ -83,7 +85,8 @@ export async function quitGuiApp(
 
   // Quit the app gracefully via AppleScript
   log.debug("Quitting app: {app}", { app: appName });
-  const { stderr, exitCode } = await dependencies.requestQuit(appName);
+  const { stderr, exitCode, alreadyStopped } = await dependencies.requestQuit(bundlePath ?? appName);
+  if (alreadyStopped) return "already-stopped";
   const quitRequestSucceeded = exitCode === 0;
 
   if (!quitRequestSucceeded) {
@@ -95,11 +98,6 @@ export async function quitGuiApp(
       app: appName,
       stderr: stderr.trim(),
     });
-  }
-
-  if (detectedPids.length === 0 && !bundlePath) {
-    log.error("Cannot verify that app {app} quit", { app: appName });
-    return "unknown";
   }
 
   // Poll until the app's main executable is gone. Helpers and
@@ -211,19 +209,27 @@ export async function quitGuiApp(
 interface QuitRequestResult {
   stderr: string;
   exitCode: number;
+  alreadyStopped?: boolean;
 }
 
 async function requestGuiAppQuit(appName: string): Promise<QuitRequestResult> {
+  // The running guard avoids AppleScript launching a closed app in the gap
+  // after the process scan. A concrete path also avoids same-name installs.
+  const target = JSON.stringify(appName);
   const quit = Bun.spawn(
-    ["osascript", "-e", `tell application "${appName}" to quit`],
+    ["osascript", "-e", `if application ${target} is running then
+  tell application ${target} to quit
+else
+  return "already-stopped"
+end if`],
     { stdout: "pipe", stderr: "pipe" },
   );
-  const [, stderr, exitCode] = await Promise.all([
+  const [stdout, stderr, exitCode] = await Promise.all([
     new Response(quit.stdout).text(),
     new Response(quit.stderr).text(),
     quit.exited,
   ]);
-  return { stderr, exitCode };
+  return { stderr, exitCode, alreadyStopped: exitCode === 0 && stdout.trim() === "already-stopped" };
 }
 
 interface ReopenGuiAppOptions {
@@ -241,10 +247,7 @@ export async function reopenGuiApp(
   let preexistingPids: number[] = [];
   if (bundlePath) {
     try {
-      const mainExecutable = await resolveBundleMainExecutable(bundlePath);
-      scanLaunched = mainExecutable
-        ? () => pidsForExecutable(mainExecutable)
-        : () => pidsInBundle(bundlePath);
+      scanLaunched = (await createGuiProcessScanner(app.pids, bundlePath)).scan;
       const observedPids = await scanLaunched();
       // Homebrew may reopen applications named by a cask's `quit` stanza
       // during `brew upgrade`. Once we already proved the old process stopped,
@@ -420,76 +423,6 @@ async function launchGuiApp(
   }
 
   return true;
-}
-
-function filterLivePids(pids: number[]): number[] {
-  return pids.filter((pid) => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (err) {
-      // EPERM => process exists but we can't signal it; still alive.
-      // ESRCH (and anything else) => treat as dead.
-      return (err as NodeJS.ErrnoException)?.code === "EPERM";
-    }
-  });
-}
-
-type BundlePidScanner = (bundlePath: string) => Promise<number[]>;
-
-interface GuiProcessScannerDependencies {
-  resolveMainExecutable: (bundlePath: string) => Promise<string | undefined>;
-  scanExecutable: (executablePath: string) => Promise<number[]>;
-  scanBundle: BundlePidScanner;
-}
-
-interface GuiProcessScanner {
-  mode: "main" | "bundle" | "pid";
-  scan: () => Promise<number[]>;
-}
-
-const defaultGuiProcessScannerDependencies: GuiProcessScannerDependencies = {
-  resolveMainExecutable: resolveBundleMainExecutable,
-  scanExecutable: pidsForExecutable,
-  scanBundle: pidsInBundle,
-};
-
-/**
- * Prefer main-executable tracking only after observing that executable alive.
- * Otherwise use the whole bundle so an inspection failure cannot masquerade
- * as a successful quit.
- */
-export async function createGuiProcessScanner(
-  trackedPids: number[],
-  bundlePath?: string,
-  dependencies: GuiProcessScannerDependencies = defaultGuiProcessScannerDependencies,
-): Promise<GuiProcessScanner> {
-  if (!bundlePath) {
-    let pids = trackedPids;
-    return {
-      mode: "pid",
-      scan: async () => {
-        pids = filterLivePids(pids);
-        return pids;
-      },
-    };
-  }
-
-  const mainExecutable = await dependencies.resolveMainExecutable(bundlePath);
-  if (mainExecutable) {
-    const mainPids = await dependencies.scanExecutable(mainExecutable);
-    if (mainPids.length > 0) {
-      return {
-        mode: "main",
-        scan: () => dependencies.scanExecutable(mainExecutable),
-      };
-    }
-  }
-
-  return {
-    mode: "bundle",
-    scan: () => dependencies.scanBundle(bundlePath),
-  };
 }
 
 function errorMessage(error: unknown): string {
