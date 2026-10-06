@@ -357,3 +357,30 @@ test("an app closed before AppleScript runs is not credited as stopped by this i
   expect(requestQuit).toHaveBeenCalledWith("/Applications/Example.app");
   expect(waitForExit).not.toHaveBeenCalled();
 });
+
+test("an observed launcher handing off to an alternate executable remains running", async () => {
+  const results = [[101], []];
+  const scanAppBundle = mock(async () => [202]);
+  const scanner = await createGuiProcessScanner([101], "/Applications/Scripted.app", {
+    resolveMainExecutable: async () => "/Applications/Scripted.app/Contents/MacOS/launcher",
+    scanExecutable: async () => results.shift() ?? [],
+    scanBundle: async () => [202, 303],
+    scanAppBundle,
+  });
+  expect(scanner.mode).toBe("main");
+  expect(await scanner.scan()).toEqual([202]);
+  expect(scanAppBundle).toHaveBeenCalledTimes(1);
+});
+
+test("an exited main with only known helpers is still considered stopped", async () => {
+  const results = [[101], []];
+  const scanBundle = mock(async () => [303]);
+  const scanner = await createGuiProcessScanner([101, 303], "/Applications/Example.app", {
+    resolveMainExecutable: async () => "/Applications/Example.app/Contents/MacOS/Example",
+    scanExecutable: async () => results.shift() ?? [],
+    scanBundle,
+    scanAppBundle: async () => [],
+  });
+  expect(await scanner.scan()).toEqual([]);
+  expect(scanBundle).not.toHaveBeenCalled();
+});

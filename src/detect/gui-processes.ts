@@ -52,7 +52,8 @@ const defaultGuiProcessScannerDependencies: GuiProcessScannerDependencies = {
 /**
  * Track a declared main only after observing it. Launcher-based bundles can
  * run a different executable; preserve that evidence while excluding known
- * helper locations. Once observed, main tracking stays fixed across shutdown.
+ * helper locations. If an observed main exits, recheck the bundle for an
+ * alternate app process before reporting shutdown.
  */
 export async function createGuiProcessScanner(
   trackedPids: number[],
@@ -71,17 +72,21 @@ export async function createGuiProcessScanner(
   }
 
   const mainExecutable = await dependencies.resolveMainExecutable(bundlePath);
+  const scanBundle = () => (mainExecutable && dependencies.scanAppBundle
+    ? dependencies.scanAppBundle(bundlePath)
+    : dependencies.scanBundle(bundlePath));
   if (mainExecutable && (await dependencies.scanExecutable(mainExecutable)).length > 0) {
     return {
       mode: "main",
-      scan: () => dependencies.scanExecutable(mainExecutable),
+      scan: async () => {
+        const mainPids = await dependencies.scanExecutable(mainExecutable);
+        return mainPids.length > 0 ? mainPids : scanBundle();
+      },
     };
   }
 
   return {
     mode: "bundle",
-    scan: () => (mainExecutable && dependencies.scanAppBundle
-      ? dependencies.scanAppBundle(bundlePath)
-      : dependencies.scanBundle(bundlePath)),
+    scan: scanBundle,
   };
 }

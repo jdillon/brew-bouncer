@@ -55,6 +55,10 @@ const defaultQuitGuiAppDependencies: QuitGuiAppDependencies = {
   sleep: Bun.sleep,
 };
 
+/**
+ * Quit a currently running GUI and verify shutdown. Already-closed or
+ * uninspectable apps are never credited as stopped by this invocation.
+ */
 export async function quitGuiApp(
   app: DetectedApp,
   dependencyOverrides: Partial<QuitGuiAppDependencies> = {},
@@ -236,6 +240,7 @@ interface ReopenGuiAppOptions {
   previousProcessWasStopped?: boolean;
 }
 
+/** Reopen a GUI and verify a stable process; accept existing PIDs only after verified shutdown. */
 export async function reopenGuiApp(
   app: DetectedApp,
   options: ReopenGuiAppOptions = {},

@@ -71,6 +71,7 @@ const defaultUpgradeDependencies = {
   doQuit, doReopen, doRestart, doUnquarantine,
 };
 
+/** Upgrade explicit targets using fresh running state and execution-context protection for lifecycle actions. */
 export async function upgrade(
   options: UpgradeOptions,
   dependencyOverrides: Partial<typeof defaultUpgradeDependencies> = {},
@@ -372,8 +373,11 @@ export async function upgrade(
     if (restartPrompted) app = (await detectRunningUpgrades([pkg]))[0];
     // Approval for one GUI bundle does not authorize lifecycle actions on a
     // different bundle or a service that appeared while the prompt was open.
-    if (app && promptedApp && (app.kind !== promptedApp.kind ||
-      app.bundlePath !== promptedApp.bundlePath || app.displayName !== promptedApp.displayName)) {
+    const identityChanged = Boolean(app && promptedApp && (
+      app.kind !== promptedApp.kind || app.bundlePath !== promptedApp.bundlePath ||
+      app.displayName !== promptedApp.displayName
+    ));
+    if (identityChanged) {
       restartRequested = false;
     }
     if (!app) restartRequested = false;
@@ -388,7 +392,7 @@ export async function upgrade(
       upgradeAssessment,
     );
     const executionProtected = decisionSafety.protected || upgradeSafety.protected;
-    const suppressHomebrewQuit = pkg.type === "cask" && executionProtected;
+    const suppressHomebrewQuit = pkg.type === "cask" && (executionProtected || identityChanged);
     if (executionProtected) {
       restartRequested = false;
     }
@@ -404,6 +408,10 @@ export async function upgrade(
         suppressHomebrewQuit,
         caskInfoParsed,
       );
+    } else if (identityChanged && suppressHomebrewQuit) {
+      console.log(chalk.yellow(
+        "  Running app identity changed during confirmation; automatic restart is cancelled and Homebrew will use --no-quit.",
+      ));
     }
 
     // Replacing a live .app can make macOS report an unexpected quit. For
@@ -433,7 +441,7 @@ export async function upgrade(
       failCount++;
       console.error(`brew upgrade ${pkg.name} could not complete: ${error instanceof Error ? error.message : String(error)}`);
       if (stoppedBeforeUpgrade && app) await doReopen(app, true);
-      if (executionProtected) renderExecutionUpgradeFailure(pkg.name, app);
+      if (executionProtected || identityChanged) renderExecutionUpgradeFailure(pkg.name, app);
       console.log("");
       continue;
     }
@@ -443,7 +451,7 @@ export async function upgrade(
       console.error(`brew upgrade ${pkg.name} exited with status ${result.exitCode}.`);
       failCount++;
       if (stoppedBeforeUpgrade && app) await doReopen(app, true);
-      if (executionProtected && (app || suppressHomebrewQuit)) {
+      if ((executionProtected || identityChanged) && (app || suppressHomebrewQuit)) {
         renderExecutionUpgradeFailure(pkg.name, app);
       }
       console.log("");
@@ -474,7 +482,7 @@ export async function upgrade(
 
     // Restart immediately if this package had a running process
     if (app) {
-      if (executionProtected) {
+      if (executionProtected || identityChanged) {
         renderExecutionManualRestart(app);
         manualRestartCount++;
       } else if (isManualRestartOnly(app)) {

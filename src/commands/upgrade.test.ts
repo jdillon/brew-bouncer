@@ -189,7 +189,7 @@ test("a different GUI bundle appearing during a prompt is not quit under the old
     return "yes";
   });
   await upgrade(interactive, d);
-  expect(d.brewUpgrade).toHaveBeenCalledTimes(1);
+  expect(d.brewUpgrade).toHaveBeenCalledWith("example", { noQuit: true });
   expect(d.doQuit).not.toHaveBeenCalled();
   expect(d.doReopen).not.toHaveBeenCalled();
 });
