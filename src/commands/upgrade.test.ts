@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { expect, mock, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { upgrade } from "./upgrade.ts";
 import type { DetectedApp } from "../detect/matcher.ts";
 import type { ExecutionContext } from "../detect/execution-context.ts";
@@ -57,11 +57,11 @@ function fixture() {
 }
 const interactive = { yes: false, verbose: false };
 
-test("an app closed at upgrade confirmation stays closed and does not affect restart policy", async () => {
+test("an app closed at upgrade confirmation stays closed despite the preview restart policy", async () => {
   const { dependencies: d, setRunning } = fixture();
   d.confirmUpgrade.mockImplementation(async () => { setRunning([]); return "yes"; });
   await upgrade(interactive, d);
-  expect(d.confirmRestartPolicy).not.toHaveBeenCalled();
+  expect(d.confirmRestartPolicy).toHaveBeenCalledWith(1, "yes");
   expect(d.doQuit).not.toHaveBeenCalled();
   expect(d.doReopen).not.toHaveBeenCalled();
   expect(d.doRestart).not.toHaveBeenCalled();
@@ -132,14 +132,15 @@ test("an unverified running state skips upgrade without launching an app", async
   expect(d.doReopen).not.toHaveBeenCalled();
 });
 
-test("an app launched during confirmation is included in the refreshed restart policy", async () => {
+test("an app launched after an empty preview is not restarted without restart approval", async () => {
   const { dependencies: d, setRunning } = fixture();
   setRunning([]);
   d.confirmUpgrade.mockImplementation(async () => { setRunning([app]); return "yes"; });
   await upgrade(interactive, d);
-  expect(d.confirmRestartPolicy).toHaveBeenCalledWith(1, "yes");
-  expect(d.doQuit).toHaveBeenCalledTimes(1);
-  expect(d.doReopen).toHaveBeenCalledTimes(1);
+  expect(d.confirmRestartPolicy).not.toHaveBeenCalled();
+  expect(d.brewUpgrade).toHaveBeenCalledTimes(1);
+  expect(d.doQuit).not.toHaveBeenCalled();
+  expect(d.doReopen).not.toHaveBeenCalled();
 });
 
 test("a protected host stays selected and upgrades with --no-quit and no automatic restart", async () => {
@@ -209,7 +210,7 @@ test("a closed GUI with a running CLI artifact upgrades without automatic lifecy
     return "yes";
   });
   await upgrade(interactive, d);
-  expect(d.confirmRestartPolicy).not.toHaveBeenCalled();
+  expect(d.confirmRestartPolicy).toHaveBeenCalledWith(1, "yes");
   expect(d.brewUpgrade).toHaveBeenCalledTimes(1);
   expect(d.doQuit).not.toHaveBeenCalled();
   expect(d.doRestart).not.toHaveBeenCalled();
@@ -239,4 +240,28 @@ test("each package is refreshed after earlier upgrades, including a partial fail
   expect(d.doQuit).toHaveBeenCalledWith(app);
   expect(d.doReopen).toHaveBeenCalledTimes(1);
   expect(d.doReopen).toHaveBeenCalledWith(app, true);
+});
+
+test("proceeding shows one package preview and defers rechecking until the package upgrade", async () => {
+  const { dependencies: d } = fixture();
+  const output = spyOn(console, "log").mockImplementation(() => {});
+  d.confirmRestartPolicy.mockImplementation(async () => {
+    // Nothing rescans the full target list between the preview and policy prompt.
+    expect(d.detectRunningUpgrades).toHaveBeenCalledTimes(1);
+    return "yes";
+  });
+  d.brewUpgrade.mockImplementation(async () => {
+    expect(d.detectRunningUpgrades).toHaveBeenCalledTimes(2);
+    return success;
+  });
+  try {
+    await upgrade(interactive, d);
+    const messages = output.mock.calls.map(([message]) => String(message));
+    expect(messages.filter((message) => message.includes("restart needed"))).toHaveLength(1);
+    expect(messages.some((message) => message.includes("Current running status"))).toBe(false);
+    expect(d.doQuit).toHaveBeenCalledTimes(1);
+    expect(d.doReopen).toHaveBeenCalledTimes(1);
+  } finally {
+    output.mockRestore();
+  }
 });

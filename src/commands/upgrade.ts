@@ -182,7 +182,7 @@ export async function upgrade(
   // Step 5: Detect running processes BEFORE showing preview
   const s3 = spinner("Checking running processes...");
   const preDetected = await detectRunningUpgrades(targets, (msg) => s3.update(msg));
-  let detectedMap = new Map(preDetected.map((d) => [d.packageName, d]));
+  const detectedMap = new Map(preDetected.map((d) => [d.packageName, d]));
   s3.update("checking Brew Bouncer execution context");
   const previewExecutionContext = await inspectExecutionContext();
   const previewExecutionAssessments = new Map(
@@ -255,29 +255,16 @@ export async function upgrade(
     }
   }
 
-  // Confirmation can remain open while the user closes or launches apps.
-  // Reuse the preview detector so restart policy reflects the selected targets now.
-  const refreshSpinner = spinner("Rechecking running processes...");
-  const refreshed = await detectRunningUpgrades(targets, (msg) => refreshSpinner.update(msg));
-  detectedMap = new Map(refreshed.map((app) => [app.packageName, app]));
-  const refreshedContext = await inspectExecutionContext();
-  const refreshedAssessments = new Map(refreshed.map((app) => [
-    app.packageName, assessExecutionTarget(app, refreshedContext),
-  ]));
-  refreshSpinner.done(`${refreshed.length} running app(s) currently affected`);
-  console.log(chalk.bold("\nCurrent running status:\n"));
-  console.log(renderPackageTable(targets, detectedMap, refreshedAssessments));
-  renderExecutionContextPreview(targets, detectedMap, refreshedAssessments);
-
-  // Step 7: Ask restart policy upfront (only when running apps detected in selected targets)
+  // Step 7: Ask restart policy from the selected preview. Running state is
+  // checked afresh when each package reaches the upgrade step below.
   const affectedCount = targets.filter((pkg) => {
     const app = detectedMap.get(pkg.name);
     if (!app || isManualRestartOnly(app)) return false;
     return planExecutionSafety(
       pkg,
       app,
-      refreshedContext,
-      refreshedAssessments.get(pkg.name),
+      previewExecutionContext,
+      previewExecutionAssessments.get(pkg.name),
     ).allowAutomaticLifecycle;
   }).length;
   let restartPolicy: RestartPolicy = "no";
