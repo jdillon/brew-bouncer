@@ -28,7 +28,8 @@ const log = getLogger(["brew-bouncer", "quarantine"]);
 
 /**
  * Check if a file/bundle has the com.apple.quarantine extended attribute.
- * Returns true if quarantined, false if attribute is absent, null if path doesn't exist.
+ * Returns true if quarantined, false if absent, null if the path is gone.
+ * Inspection failures throw so callers cannot silently report successful checks.
  */
 export async function isQuarantined(path: string): Promise<boolean | null> {
   const proc = Bun.spawn(["xattr", "-p", "com.apple.quarantine", path], {
@@ -53,12 +54,8 @@ export async function isQuarantined(path: string): Promise<boolean | null> {
     return false;
   }
 
-  // "No such file" = path doesn't exist, or any other error (permission denied, etc.)
-  // Treat as indeterminate — don't falsely mark as approved
-  if (!stderr.includes("No such file")) {
-    log.warn("unexpected xattr error for {path}: {stderr}", { path, stderr: stderr.trim() });
-  }
-  return null;
+  if (stderr.includes("No such file")) return null;
+  throw new Error(`Cannot inspect quarantine for ${path}: ${stderr.trim() || `xattr exited ${exitCode}`}`);
 }
 
 /**
@@ -180,7 +177,7 @@ export async function enumeratePackageExecutables(
     const existing = await Promise.all(
       paths.map(async (p) => {
         const q = await isQuarantined(p);
-        return q !== null ? p : null; // null = path doesn't exist
+        return q !== null ? p : null; // null = path does not exist
       })
     );
     const found = existing.filter((p): p is string => p !== null);

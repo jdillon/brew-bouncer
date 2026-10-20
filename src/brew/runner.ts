@@ -22,6 +22,7 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  diagnosticsIncomplete?: boolean;
 }
 
 /**
@@ -68,29 +69,132 @@ export async function exec(args: string[]): Promise<ExecResult> {
   return { stdout, stderr, exitCode };
 }
 
+/** Capture redirected streams only; terminal descriptors remain inherited. */
+async function execRedirected(command: string[]): Promise<ExecResult> {
+  const captureOut = !process.stdout.isTTY;
+  const captureErr = !process.stderr.isTTY;
+  const proc = Bun.spawn(command, {
+    stdin: "inherit",
+    stdout: captureOut ? "pipe" : "inherit",
+    stderr: captureErr ? "pipe" : "inherit",
+  });
+  async function forward(stream: ReadableStream<Uint8Array> | null | undefined, target: NodeJS.WriteStream): Promise<string> {
+    if (!stream) return "";
+    const decoder = new TextDecoder();
+    let text = "";
+    for await (const chunk of stream) {
+      text += decoder.decode(chunk, { stream: true });
+      target.write(chunk);
+    }
+    return text + decoder.decode();
+  }
+  const [stdout, stderr, exitCode] = await Promise.all([
+    forward(proc.stdout, process.stdout), forward(proc.stderr, process.stderr), proc.exited,
+  ]);
+  return { stdout, stderr, exitCode, diagnosticsIncomplete: !captureOut || !captureErr };
+}
+
 /**
- * Run a brew command with stdout/stderr streaming directly to the terminal.
- * Use for --verbose passthrough where the user wants to see everything.
+ * A controlling PTY preserves isatty, /dev/tty prompts and echo-off passwords.
+ * Forward input without recording it, and keep the caller's raw mode/flow state.
+ * stdout holds the combined terminal output; stderr is not separable on a PTY.
  */
+export async function execTerminal(command: string[]): Promise<ExecResult> {
+  // Never turn redirected input/output into a terminal: that changes prompts,
+  // isatty and EOF behavior. Mixed terminal/redirected descriptors stay mixed.
+  if (!process.stdin.isTTY || !process.stdout.isTTY || !process.stderr.isTTY) {
+    return execRedirected(command);
+  }
+  const input = process.stdin;
+  const wasRaw = input.isRaw;
+  const wasFlowing = input.readableFlowing;
+  let stdout = "";
+  const decoder = new TextDecoder();
+  let endOutput!: () => void;
+  const outputEnded = new Promise<void>((resolve) => { endOutput = resolve; });
+  const terminalOptions: Bun.TerminalOptions = {
+    name: process.env.TERM || "xterm-256color",
+    cols: process.stdout.columns || 80,
+    rows: process.stdout.rows || 24,
+    data(_terminal, data) {
+      stdout += decoder.decode(data, { stream: true });
+      process.stdout.write(data);
+    },
+    exit() { endOutput(); },
+  };
+  let terminal: Bun.Terminal | undefined;
+  let suspend = () => {};
+  const forward = (data: Buffer) => {
+    let start = 0;
+    for (let i = 0; i < data.length; i++) {
+      if (data[i] !== 0x1a) continue;
+      terminal?.write(data.subarray(start, i));
+      suspend();
+      start = i + 1;
+    }
+    terminal?.write(data.subarray(start));
+  };
+  const resize = () => terminal?.resize(process.stdout.columns || 80, process.stdout.rows || 24);
+  try {
+    const proc = Bun.spawn(command, { terminal: terminalOptions });
+    terminal = proc.terminal!;
+    // The PTY child owns its own session/process group. Stop that group and
+    // the outer foreground job together; `fg` resumes both via SIGCONT.
+    const signalChild = (signal: NodeJS.Signals) => {
+      try { process.kill(-proc.pid, signal); }
+      catch { if (proc.exitCode === null) proc.kill(signal); }
+    };
+    suspend = () => {
+      input.setRawMode(Boolean(wasRaw));
+      signalChild("SIGSTOP");
+      process.kill(process.pid, "SIGSTOP");
+    };
+    const resume = () => {
+      input.setRawMode(true);
+      resize();
+      signalChild("SIGCONT");
+    };
+    process.on("SIGTSTP", suspend);
+    process.on("SIGCONT", resume);
+    input.on("data", forward);
+    const endInput = () => { terminal?.write("\x04"); };
+    input.once("end", endInput);
+    if (input.readableEnded) endInput();
+    if (input.isTTY) input.setRawMode(true);
+    input.resume();
+    process.stdout.on("resize", resize);
+    process.on("SIGWINCH", resize);
+    try {
+      const exitCode = await proc.exited;
+      await outputEnded;
+      stdout += decoder.decode();
+      return { stdout, stderr: "", exitCode };
+    } finally {
+      process.off("SIGTSTP", suspend);
+      process.off("SIGCONT", resume);
+      input.off("end", endInput);
+      process.stdout.off("resize", resize);
+      process.off("SIGWINCH", resize);
+    }
+  } finally {
+    input.off("data", forward);
+    if (input.isTTY) input.setRawMode(Boolean(wasRaw));
+    if (wasFlowing !== true) input.pause();
+    terminal?.close();
+  }
+}
+
 export async function execStreaming(args: string[]): Promise<ExecResult> {
   log.debug("execStreaming: brew {args}", { args: args.join(" ") });
-
-  const proc = Bun.spawn([BREW_PATH, ...args], {
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-
-  const exitCode = await proc.exited;
-
-  log.debug("execStreaming: brew {args} exit {exitCode}", {
-    args: args.join(" "),
-    exitCode,
-  });
-  return { stdout: "", stderr: "", exitCode };
+  return execTerminal([BREW_PATH, ...args]);
 }
 
 export async function brewUpdate(): Promise<ExecResult> {
   return exec(["update"]);
+}
+
+export async function brewInstalled(): Promise<ExecResult> {
+  return exec(["info", "--installed", "--json=v2"]);
 }
 
 export async function brewOutdated(): Promise<ExecResult> {

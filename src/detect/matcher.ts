@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { HOMEBREW_PREFIX } from "../brew/paths.ts";
 import type { OutdatedPackage } from "../brew/parser.ts";
 import {
   brewInfoJson,
@@ -254,9 +255,17 @@ export async function detectRunningUpgrades(
 
         // Check running processes via brew list
         const listResult = await brewList(pkg.name);
-        if (listResult.exitCode !== 0) return null;
-
-        const kegPrefixes = extractKegPrefixes(listResult.stdout);
+        // Cleanup (including cleanup during a failed upgrade) may already have
+        // removed an old keg. Its receipt identity still scopes running old
+        // executables; do not fall back to unsafe basename matching.
+        const formulaName = pkg.name.split("/").at(-1)!;
+        const previousKegs = pkg.installedVersions
+          .filter((version) => version !== "." && version !== ".." && !version.includes("/"))
+          .map((version) => `${HOMEBREW_PREFIX}/Cellar/${formulaName}/${version}/`);
+        const kegPrefixes = [
+          ...previousKegs,
+          ...(listResult.exitCode === 0 ? extractKegPrefixes(listResult.stdout) : []),
+        ];
         const matched = matchFormulaToRunningProcesses(
           kegPrefixes,
           runningProcesses

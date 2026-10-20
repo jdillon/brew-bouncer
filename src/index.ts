@@ -51,11 +51,12 @@ program
   )
   .action(async (packages: string[], opts: { yes: boolean }) => {
     const globalOpts = program.opts<{ verbose?: boolean }>();
-    await upgrade({
+    const result = await upgrade({
       yes: opts.yes,
       verbose: globalOpts.verbose ?? false,
       only: packages.length > 0 ? packages : undefined,
     });
+    process.exitCode = result.exitCode;
   });
 
 program
