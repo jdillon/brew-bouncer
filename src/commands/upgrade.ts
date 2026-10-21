@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import {
+  brewInstalled,
   brewUpdate,
   brewOutdated,
   brewUpgrade,
@@ -33,6 +34,7 @@ import {
   assessExecutionTarget,
   inspectExecutionContext,
   type ExecutionTargetAssessment,
+  type ExecutionContext,
 } from "../detect/execution-context.ts";
 import {
   quitGuiApp,
@@ -49,6 +51,9 @@ import { renderPackageTable, renderSkipped, renderSummary } from "../output/form
 import { getVersion } from "../version.ts";
 import { planExecutionSafety } from "../upgrade-policy.ts";
 import chalk from "chalk";
+import { collectUpgradeDiagnostics, type UpgradeDiagnostic } from "../brew/diagnostics.ts";
+import { installedChanges, packageKey, parseInstalled, type InstalledState } from "../brew/state.ts";
+import type { OutdatedPackage } from "../brew/parser.ts";
 
 interface UpgradeOptions {
   yes: boolean;
@@ -56,14 +61,10 @@ interface UpgradeOptions {
   only?: string[];
 }
 
-interface UpgradeDiagnostic {
-  packageName: string;
-  level: "warning" | "error";
-  message: string;
-}
+export interface UpgradeResult { exitCode: number }
 
 const defaultUpgradeDependencies = {
-  brewUpdate, brewOutdated, brewUpgrade, brewInfoJson, exec,
+  brewInstalled, brewUpdate, brewOutdated, brewUpgrade, brewInfoJson, exec,
   detectRunningUpgrades, inspectExecutionContext, loadConfig,
   enumeratePackageExecutables, isQuarantined,
   confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart,
@@ -75,9 +76,9 @@ const defaultUpgradeDependencies = {
 export async function upgrade(
   options: UpgradeOptions,
   dependencyOverrides: Partial<typeof defaultUpgradeDependencies> = {},
-): Promise<void> {
+): Promise<UpgradeResult> {
   const {
-    brewUpdate, brewOutdated, brewUpgrade, brewInfoJson, exec,
+    brewInstalled, brewUpdate, brewOutdated, brewUpgrade, brewInfoJson, exec,
     detectRunningUpgrades, inspectExecutionContext, loadConfig,
     enumeratePackageExecutables, isQuarantined,
     confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart,
@@ -93,7 +94,7 @@ export async function upgrade(
   if (updateResult.exitCode !== 0) {
     s1.fail("brew update failed");
     console.error(formatExecFailure("brew update", updateResult));
-    process.exit(1);
+    return { exitCode: 1 };
   }
   s1.done("Homebrew updated");
 
@@ -104,18 +105,18 @@ export async function upgrade(
   if (outdatedResult.exitCode !== 0) {
     s2.fail("brew outdated failed");
     console.error(formatExecFailure("brew outdated --greedy --json", outdatedResult));
-    process.exit(1);
+    return { exitCode: 1 };
   }
 
   if (!outdatedResult.stdout.trim()) {
     s2.done("Everything is up to date.");
-    return;
+    return { exitCode: 0 };
   }
 
   const allOutdated = parseOutdated(outdatedResult.stdout);
   if (allOutdated.length === 0) {
     s2.done("Everything is up to date.");
-    return;
+    return { exitCode: 0 };
   }
   s2.done(`${allOutdated.length} outdated packages found`);
 
@@ -167,7 +168,7 @@ export async function upgrade(
 
     if (targets.length === 0) {
       console.log("Nothing to upgrade.");
-      return;
+      return { exitCode: 0 };
     }
   }
 
@@ -176,7 +177,7 @@ export async function upgrade(
       renderSkipped(skipped);
     }
     console.log("Nothing to upgrade.");
-    return;
+    return { exitCode: 0 };
   }
 
   // Step 5: Detect running processes BEFORE showing preview
@@ -236,7 +237,7 @@ export async function upgrade(
     );
     if (choice === "no") {
       console.log("Aborted.");
-      return;
+      return { exitCode: 0 };
     }
     if (choice === "select") {
       targets = await selectPackages(
@@ -246,7 +247,7 @@ export async function upgrade(
       );
       if (targets.length === 0) {
         console.log("No packages selected.");
-        return;
+        return { exitCode: 0 };
       }
 
       console.log(chalk.bold(`\nSelected for upgrade (${targets.length}):\n`));
@@ -284,7 +285,8 @@ export async function upgrade(
   const totalExecutableCount = targetsWithExecutables.reduce(
     (n, p) => n + (packageExecutables.get(p.name)?.length ?? 0), 0
   );
-  let quarantinePolicy: PolicyChoice = "no";
+  let quarantinePolicy: PolicyChoice = options.yes ? "yes" : "no";
+  let quarantinePolicyChosen = totalExecutableCount > 0 || options.yes;
   if (totalExecutableCount > 0) {
     if (options.yes) {
       quarantinePolicy = "yes";
@@ -302,10 +304,73 @@ export async function upgrade(
   console.log(chalk.bold("Upgrading...\n"));
 
   let failCount = 0;
+  let successfulRequests = 0;
+  let noVersionChangeCount = 0;
+  const failedRequests: string[] = [];
+  const lifecycleFailures: string[] = [];
+  async function recover<T>(label: string, operation: () => Promise<T>, fallback: T): Promise<T> {
+    try { return await operation(); }
+    catch (error) {
+      lifecycleFailures.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
+      return fallback;
+    }
+  }
+  async function perform(label: string, operation: () => Promise<boolean>): Promise<boolean> {
+    return recover(label, async () => {
+      const ok = await operation();
+      if (!ok) lifecycleFailures.push(label);
+      return ok;
+    }, false);
+  }
+  const skippedWork: string[] = [];
+  const outstandingRestarts = new Set<string>();
+  const probeFailures = new Set<string>();
+  async function runningFor(packages: OutdatedPackage[]): Promise<DetectedApp[]> {
+    try { return await detectRunningUpgrades(packages); }
+    catch (error) {
+      lifecycleFailures.push(`${packages.map((p) => p.name).join(", ")}: process detection failed: ${String(error)}`);
+      for (const pkg of packages) { probeFailures.add(pkg.name); outstandingRestarts.add(pkg.name); }
+      return [];
+    }
+  }
+  async function contextFor(pkg: OutdatedPackage, app?: DetectedApp): Promise<ExecutionContext> {
+    if (!app && !probeFailures.has(pkg.name)) {
+      return { status: "known", rootPid: process.pid, frames: [], guiHosts: [],
+        hints: { tmux: false }, issues: [] };
+    }
+    try { return await inspectExecutionContext(); }
+    catch (error) {
+      lifecycleFailures.push(`${pkg.name}: execution context detection failed: ${String(error)}`);
+      probeFailures.add(pkg.name);
+      outstandingRestarts.add(pkg.name);
+      return { status: "unknown", rootPid: process.pid, frames: [], guiHosts: [],
+        hints: { tmux: Boolean(process.env.TMUX) }, issues: ["execution context probe failed"] };
+    }
+  }
+  const observedChanges = new Map<string, OutdatedPackage>();
+  const dependencyUpdated = new Set<string>();
+  const extraChanges = new Map<string, OutdatedPackage>();
+  const targetKeys = new Set(targets.map(packageKey));
+  let state: InstalledState | null = null;
+  let refreshedOutdated: Set<string> | null = null;
+  let observationFailed = false;
+  async function readInstalled(): Promise<InstalledState | null> {
+    try {
+      const result = await brewInstalled();
+      if (result.exitCode !== 0) throw new Error(`exit ${result.exitCode}`);
+      return parseInstalled(result.stdout);
+    } catch (error) {
+      observationFailed = true;
+      console.error(`Installed-state observation failed: ${error instanceof Error ? error.message : String(error)}; package changes may be incomplete.`);
+      return null;
+    }
+  }
+  state = await readInstalled();
   let restartedCount = 0;
   let restartSkippedCount = 0;
-  let manualRestartCount = 0;
+  let recoveredReopenCount = 0;
   let unquarantinedCount = 0;
+  let quarantineCheckedCount = 0;
   let restartAll = restartPolicy === "yes";
   const diagnostics: UpgradeDiagnostic[] = [];
 
@@ -316,8 +381,12 @@ export async function upgrade(
         chalk.dim(` ${pkg.installedVersions[0]} → ${pkg.currentVersion}`)
     );
 
-    let app = (await detectRunningUpgrades([pkg]))[0];
-    const decisionContext = await inspectExecutionContext();
+    const alreadyUpdated = Boolean(state?.has(packageKey(pkg)) && refreshedOutdated !== null && !refreshedOutdated.has(packageKey(pkg)));
+    let app = (await runningFor([pkg]))[0];
+    // Old kegs may have been cleaned up. Retain preview evidence for manual
+    // guidance only; it never authorizes a lifecycle action on a stale PID.
+    const earlierApp = alreadyUpdated ? detectedMap.get(pkg.name) : undefined;
+    const decisionContext = await contextFor(pkg, app);
     const decisionAssessment = app
       ? assessExecutionTarget(app, decisionContext)
       : undefined;
@@ -357,7 +426,7 @@ export async function upgrade(
     // global prompts and earlier upgrades. GUI quit also scans before sending
     // any quit request to catch an app that closed during these safety checks.
     const promptedApp = app;
-    if (restartPrompted) app = (await detectRunningUpgrades([pkg]))[0];
+    if (restartPrompted) app = (await runningFor([pkg]))[0];
     // Approval for one GUI bundle does not authorize lifecycle actions on a
     // different bundle or a service that appeared while the prompt was open.
     const identityChanged = Boolean(app && promptedApp && (
@@ -368,7 +437,7 @@ export async function upgrade(
       restartRequested = false;
     }
     if (!app) restartRequested = false;
-    const upgradeContext = await inspectExecutionContext();
+    const upgradeContext = await contextFor(pkg, app);
     const upgradeAssessment = app
       ? assessExecutionTarget(app, upgradeContext)
       : undefined;
@@ -379,7 +448,7 @@ export async function upgrade(
       upgradeAssessment,
     );
     const executionProtected = decisionSafety.protected || upgradeSafety.protected;
-    const suppressHomebrewQuit = pkg.type === "cask" && (executionProtected || identityChanged);
+    const suppressHomebrewQuit = pkg.type === "cask" && (executionProtected || identityChanged || probeFailures.has(pkg.name));
     if (executionProtected) {
       restartRequested = false;
     }
@@ -404,14 +473,18 @@ export async function upgrade(
     // Replacing a live .app can make macOS report an unexpected quit. For
     // opted-in restarts, stop it cleanly before Homebrew touches the bundle.
     let stoppedBeforeUpgrade = false;
-    if (restartRequested && app?.kind === "cask-gui") {
-      const quitStatus = await doQuit(app);
+    if (!alreadyUpdated && restartRequested && app?.kind === "cask-gui") {
+      const quitApp = app;
+      const failuresBeforeQuit = lifecycleFailures.length;
+      const quitStatus = await recover(`${pkg.name}: quit failed`, () => doQuit(quitApp), "unknown" as GuiQuitStatus);
       stoppedBeforeUpgrade = quitStatus === "stopped";
       if (quitStatus === "already-stopped") {
         app = undefined;
         restartRequested = false;
       } else if (!stoppedBeforeUpgrade) {
-        failCount++;
+        skippedWork.push(`${pkg.name}: app quit ${quitStatus}; upgrade not attempted`);
+        if (lifecycleFailures.length === failuresBeforeQuit) lifecycleFailures.push(`${pkg.name}: could not quit app (${quitStatus})`);
+        outstandingRestarts.add(pkg.name);
         console.log(chalk.yellow("  Upgrade skipped because the app did not quit"));
         if (quitStatus === "unknown") {
           console.log(chalk.yellow("  Running state could not be verified; check the app manually"));
@@ -421,88 +494,187 @@ export async function upgrade(
       }
     }
 
-    let result: Awaited<ReturnType<typeof brewUpgrade>>;
-    try {
-      result = await brewUpgrade(pkg.name, { noQuit: suppressHomebrewQuit });
-    } catch (error) {
-      failCount++;
-      console.error(`brew upgrade ${pkg.name} could not complete: ${error instanceof Error ? error.message : String(error)}`);
-      if (stoppedBeforeUpgrade && app) await doReopen(app, true);
-      if (executionProtected || identityChanged) renderExecutionUpgradeFailure(pkg.name, app);
-      console.log("");
-      continue;
-    }
-    diagnostics.push(...collectUpgradeDiagnostics(pkg.name, result.stdout, result.stderr));
+    let upgradeFailed = false;
+    const before = state;
+    if (alreadyUpdated) {
+      if (observedChanges.has(packageKey(pkg))) {
+        dependencyUpdated.add(pkg.name);
+        console.log(chalk.dim("  Updated by an earlier operation; no redundant upgrade request."));
+      } else {
+        noVersionChangeCount++;
+        console.log(chalk.dim("  No longer outdated; no upgrade request (no version change observed)."));
+      }
+    } else {
+      try {
+        const result = await brewUpgrade(pkg.name, { noQuit: suppressHomebrewQuit });
+        diagnostics.push(...collectUpgradeDiagnostics(pkg.name, result.stdout, result.stderr));
+        if (result.diagnosticsIncomplete) diagnostics.push({ packageName: pkg.name, level: "warning",
+          message: "Mixed terminal/redirection: some output was displayed directly and could not be summarized; inspect the live output." });
+        if (result.exitCode !== 0) {
+          throw new Error(`exited with status ${result.exitCode}`);
+        }
+        successfulRequests++;
+      } catch (error) {
+        upgradeFailed = true;
+        failCount++;
+        const reason = error instanceof Error ? error.message : String(error);
+        failedRequests.push(`${pkg.name}: ${reason}; installation/rollback outcome unverified`);
+        console.error(`brew upgrade ${pkg.name}: ${reason}. Installation/rollback outcome is unverified.`);
+      }
 
-    if (result.exitCode !== 0) {
-      console.error(`brew upgrade ${pkg.name} exited with status ${result.exitCode}.`);
-      failCount++;
-      if (stoppedBeforeUpgrade && app) await doReopen(app, true);
-      if ((executionProtected || identityChanged) && (app || suppressHomebrewQuit)) {
+      // A failed request can still install dependencies or replace files.
+      // Observe state and detect processes after every attempt, including throws.
+      const observed = await readInstalled();
+      // Keep the last observation through transient failures. A fresh outdated
+      // list can still reconcile queued packages known to have been installed.
+      state = observed ?? before;
+      if (before && observed) {
+        const changes = installedChanges(before, observed);
+        for (const changed of changes) {
+          const key = packageKey(changed);
+          const observation = { ...changed,
+            installedVersions: observedChanges.get(key)?.installedVersions ?? changed.installedVersions };
+          observedChanges.set(key, observation);
+          if (!targetKeys.has(key)) extraChanges.set(key, observation);
+        }
+        if (!upgradeFailed && !changes.some((changed) => packageKey(changed) === packageKey(pkg))) {
+          noVersionChangeCount++;
+        }
+      }
+      try {
+        const current = await brewOutdated();
+        if (current.exitCode !== 0) throw new Error(`exit ${current.exitCode}`);
+        refreshedOutdated = new Set(parseOutdated(current.stdout).map(packageKey));
+      } catch {
+        refreshedOutdated = null;
+        observationFailed = true;
+        diagnostics.push({ packageName: pkg.name, level: "warning",
+          message: "Could not refresh outdated state; remaining explicit targets will still be attempted." });
+      }
+      const changedPackages = before && observed ? installedChanges(before, observed) : [];
+      const postApps = await runningFor([
+        pkg, ...changedPackages.filter((changed) => packageKey(changed) !== packageKey(pkg)),
+      ]);
+      for (const changed of changedPackages) {
+        if (!targetKeys.has(packageKey(changed)) && detectedMap.has(changed.name)) {
+          outstandingRestarts.add(changed.name);
+        }
+      }
+      for (const postApp of postApps) {
+        const changed = changedPackages.find((p) => p.name === postApp.packageName);
+        if ((changed && !targetKeys.has(packageKey(changed))) ||
+            (postApp.packageName === pkg.name && !app && !stoppedBeforeUpgrade)) {
+          outstandingRestarts.add(postApp.packageName);
+        }
+      }
+      if (upgradeFailed) {
+        if (stoppedBeforeUpgrade && app) {
+          const recoveryTarget = app;
+          if (await perform(`${pkg.name}: recovery reopen failed`, () => doReopen(recoveryTarget, true))) recoveredReopenCount++;
+          else outstandingRestarts.add(pkg.name);
+        } else if (app || postApps.some((a) => a.packageName === pkg.name)) {
+          outstandingRestarts.add(pkg.name);
+        }
         renderExecutionUpgradeFailure(pkg.name, app);
       }
-      console.log("");
-      continue;
     }
 
     // Check quarantine post-upgrade and remove per policy.
     // Done after upgrade so newly-downloaded binaries (which ship quarantined)
     // are handled, not just previously-approved ones.
-    const execPaths = packageExecutables.get(pkg.name);
-    if (execPaths && quarantinePolicy !== "no") {
+    let quarantineCasks = caskInfoParsed?.casks ?? [];
+    const inspectQuarantine = quarantinePolicy !== "no" || !quarantinePolicyChosen;
+    if (inspectQuarantine && pkg.type === "cask") {
+      quarantineCasks = await recover(`${pkg.name}: post-upgrade cask metadata refresh failed`, async () => {
+        const info = await brewInfoJson([pkg.name]);
+        if (info.exitCode !== 0) throw new Error(`brew info exited ${info.exitCode}`);
+        return parseBrewInfo(info.stdout).casks;
+      }, quarantineCasks);
+    }
+    const freshExecutables = inspectQuarantine
+      ? await recover(`${pkg.name}: executable enumeration failed`,
+        () => enumeratePackageExecutables([pkg], quarantineCasks), new Map<string, string[]>())
+      : new Map<string, string[]>();
+    const execPaths = [...new Set([
+      ...(packageExecutables.get(pkg.name) ?? []), ...(freshExecutables.get(pkg.name) ?? []),
+    ])];
+    if (!quarantinePolicyChosen && execPaths.length > 0) {
+      quarantinePolicy = await confirmQuarantinePolicy(execPaths.length, config.promptDefaults.quarantinePolicy);
+      quarantinePolicyChosen = true;
+    }
+    if (quarantinePolicy !== "no") {
       for (const path of execPaths) {
-        const quarantined = await isQuarantined(path);
+        quarantineCheckedCount++;
+        const quarantined = await recover(`${pkg.name}: quarantine check failed: ${path}`, () => isQuarantined(path), null);
         if (quarantined !== true) continue; // not quarantined or path gone
         if (quarantinePolicy === "yes") {
-          const ok = await doUnquarantine(path);
+          const ok = await perform(`${pkg.name}: quarantine removal failed: ${path}`, () => doUnquarantine(path));
           if (ok) unquarantinedCount++;
         } else {
           // quarantinePolicy === "ask"
           const choice = await confirmUnquarantine(path);
           if (choice) {
-            const ok = await doUnquarantine(path);
+            const ok = await perform(`${pkg.name}: quarantine removal failed: ${path}`, () => doUnquarantine(path));
             if (ok) unquarantinedCount++;
           }
         }
       }
     }
 
+    // On failure, recovery was handled above. Do not restart a service whose
+    // rollback state is unknown. Continue quarantine and later targets.
+    if (upgradeFailed) { console.log(""); continue; }
+    if (alreadyUpdated && !app && earlierApp) {
+      outstandingRestarts.add(pkg.name);
+      console.log(chalk.yellow(`  ${pkg.name}: check earlier running process; restart manually if still running.`));
+    }
     // Restart immediately if this package had a running process
     if (app) {
       if (executionProtected || identityChanged) {
         renderExecutionManualRestart(app);
-        manualRestartCount++;
+        outstandingRestarts.add(pkg.name);
       } else if (isManualRestartOnly(app)) {
         const pids = app.pids.length > 0 ? ` (PID ${app.pids.join(", ")})` : "";
         console.log(chalk.dim(`  ${app.displayName}${pids}: restart manually`));
-        manualRestartCount++;
+        outstandingRestarts.add(pkg.name);
       } else if (restartPolicy === "no") {
         restartSkippedCount++;
+        outstandingRestarts.add(pkg.name);
       } else if (restartRequested) {
         if (app.kind === "formula-service") {
-          const current = (await detectRunningUpgrades([pkg]))[0];
+          const current = (await runningFor([pkg]))[0];
+          if (probeFailures.has(pkg.name)) {
+            console.log(chalk.yellow(`  ${pkg.name}: service state could not be verified; check/restart manually.`));
+            continue;
+          }
           if (current?.kind !== "formula-service") {
             console.log(chalk.dim(`  ${app.displayName}: service is no longer running; leaving it stopped`));
             console.log("");
             continue;
           }
-          const context = await inspectExecutionContext();
+          const context = await contextFor(pkg, current);
           if (!planExecutionSafety(pkg, current, context, assessExecutionTarget(current, context)).allowAutomaticLifecycle) {
             renderExecutionManualRestart(current);
-            manualRestartCount++;
+            outstandingRestarts.add(pkg.name);
             console.log("");
             continue;
           }
         }
-        const ok = stoppedBeforeUpgrade
-          ? await doReopen(app, true)
-          : await doRestart(app);
+        const restartTarget = app;
+        const ok = await perform(`${pkg.name}: ${stoppedBeforeUpgrade ? "reopen" : "restart"} failed`, () => stoppedBeforeUpgrade
+          ? doReopen(restartTarget, true)
+          : doRestart(restartTarget));
         if (ok) restartedCount++;
+        else {
+          outstandingRestarts.add(pkg.name);
+        }
       } else {
         console.log(chalk.dim(`  Skipped ${app.displayName}`));
         restartSkippedCount++;
+        outstandingRestarts.add(pkg.name);
       }
     } else if (executionProtected && suppressHomebrewQuit) {
+      outstandingRestarts.add(pkg.name);
       console.log(chalk.yellow(
         `  ${pkg.name}: check for affected processes and restart them manually after Brew Bouncer exits.`,
       ));
@@ -513,17 +685,32 @@ export async function upgrade(
 
   // Summary
   const parts: string[] = [];
-  parts.push(`${targets.length - failCount} upgraded`);
+  parts.push(`${successfulRequests} successful upgrade requests`);
+  parts.push(`${observedChanges.size} observed package version changes`);
+  if (dependencyUpdated.size) parts.push(`${dependencyUpdated.size} targets updated by earlier operations`);
+  if (noVersionChangeCount) parts.push(`${noVersionChangeCount} with no version change observed`);
+  if (skippedWork.length) parts.push(`${skippedWork.length} skipped`);
+  if (quarantineCheckedCount) parts.push(`${quarantineCheckedCount} paths checked for quarantine`);
+  if (lifecycleFailures.length) parts.push(`${lifecycleFailures.length} lifecycle failures`);
   if (failCount > 0) parts.push(chalk.yellow(`${failCount} failed`));
   if (unquarantinedCount > 0) parts.push(chalk.green(`${unquarantinedCount} unquarantined`));
   if (restartedCount > 0) parts.push(chalk.cyan(`${restartedCount} restarted`));
   if (restartSkippedCount > 0) parts.push(chalk.dim(`${restartSkippedCount} restart skipped`));
-  if (manualRestartCount > 0) {
-    parts.push(chalk.dim(`${manualRestartCount} manual restart required`));
+  if (recoveredReopenCount > 0) parts.push(`${recoveredReopenCount} reopened after failed upgrades`);
+  if (outstandingRestarts.size > 0) {
+    parts.push(chalk.dim(`${outstandingRestarts.size} manual restart/check required`));
   }
   console.log(parts.join(chalk.dim(" · ")));
 
+  for (const failure of failedRequests) console.log(chalk.red(`  Failed upgrade: ${failure}`));
+  for (const failure of lifecycleFailures) console.log(chalk.red(`  Recovery failure: ${failure}`));
+  for (const skipped of skippedWork) console.log(chalk.yellow(`  Skipped: ${skipped}`));
+  if (dependencyUpdated.size) console.log(`  Updated by earlier operations: ${[...dependencyUpdated].join(", ")}`);
+  if (extraChanges.size) console.log(`  Additional dependency changes observed: ${[...extraChanges.values()].map((p) => `${p.name} (${p.installedVersions.join(", ") || "new"} → ${p.currentVersion})`).join(", ")}`);
+  if (outstandingRestarts.size) console.log(chalk.yellow(`  Manual restart/check required: ${[...outstandingRestarts].join(", ")}`));
+  if (observationFailed) console.log(chalk.yellow("  Package change accounting is incomplete; inspect installed state manually."));
   renderDiagnosticsSummary(diagnostics);
+  return { exitCode: failCount || lifecycleFailures.length || observationFailed ? 1 : 0 };
 }
 
 function renderExecutionContextPreview(
@@ -642,39 +829,6 @@ async function doUnquarantine(path: string): Promise<boolean> {
   return ok;
 }
 
-function collectUpgradeDiagnostics(
-  packageName: string,
-  stdout: string,
-  stderr: string
-): UpgradeDiagnostic[] {
-  const lines = `${stdout}\n${stderr}`
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const diagnostics: UpgradeDiagnostic[] = [];
-  const seen = new Set<string>();
-
-  for (const line of lines) {
-    const level = classifyDiagnostic(line);
-    if (!level) continue;
-
-    const key = `${level}:${line}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    diagnostics.push({ packageName, level, message: line });
-  }
-
-  return diagnostics;
-}
-
-function classifyDiagnostic(line: string): UpgradeDiagnostic["level"] | null {
-  if (/^Warning:/.test(line)) return "warning";
-  if (/^Error:/.test(line)) return "error";
-  return null;
-}
-
 function renderDiagnosticsSummary(diagnostics: UpgradeDiagnostic[]): void {
   if (diagnostics.length === 0) return;
 
@@ -688,6 +842,6 @@ function renderDiagnosticsSummary(diagnostics: UpgradeDiagnostic[]): void {
     }
 
     const icon = diagnostic.level === "error" ? chalk.red("✗") : chalk.yellow("!");
-    console.log(`  ${icon} ${diagnostic.message}`);
+    console.log(`  ${icon} ${diagnostic.message.replace(/\n/g, "\n    ")}`);
   }
 }

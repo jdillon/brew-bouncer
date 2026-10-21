@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { HOMEBREW_PREFIX } from "../brew/paths.ts";
 import { expect, test } from "bun:test";
 import { detectRunningUpgrades } from "./matcher.ts";
 import { assessExecutionTarget, type ExecutionContext } from "./execution-context.ts";
@@ -75,4 +76,20 @@ test("a closed first same-name bundle does not hide a live second install", asyn
   });
   expect(apps[0]?.kind).toBe("cask-gui");
   expect(apps[0]?.bundlePath).toBe(secondPath);
+});
+
+test("post-failure detection retains old keg identities after cleanup removed brew list paths", async () => {
+  const command = `${HOMEBREW_PREFIX}/Cellar/watchman/1/bin/watchman`;
+  const apps = await detectRunningUpgrades([
+    { name: "watchman", type: "formula", installedVersions: ["1"], currentVersion: "2" },
+  ], undefined, {
+    ...fixture([
+      { pid: 404, name: "watchman", command, path: command },
+      { pid: 405, name: "watchman", command: "/unrelated/bin/watchman", path: "/unrelated/bin/watchman" },
+      { pid: 406, name: "watchman", command: `${HOMEBREW_PREFIX}/Cellar/watchman/1.1/bin/watchman`, path: `${HOMEBREW_PREFIX}/Cellar/watchman/1.1/bin/watchman` },
+    ], []),
+    brewList: async () => ({ ...success, exitCode: 1 }),
+  });
+  expect(apps[0]?.kind).toBe("formula-cli");
+  expect(apps[0]?.pids).toEqual([404]);
 });
