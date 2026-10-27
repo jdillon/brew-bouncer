@@ -41,9 +41,10 @@ test("formatExecFailure always provides an exit-code reason", () => {
 });
 
 test("brewUpgradeArgs adds --no-quit only when requested", () => {
-  expect(brewUpgradeArgs("cmux")).toEqual(["upgrade", "cmux"]);
+  expect(brewUpgradeArgs("cmux")).toEqual(["upgrade", "--no-ask", "cmux"]);
   expect(brewUpgradeArgs("cmux", { noQuit: true })).toEqual([
     "upgrade",
+    "--no-ask",
     "--no-quit",
     "cmux",
   ]);

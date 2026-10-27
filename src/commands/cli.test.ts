@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 
 // Exercise the real entry point, orchestration and brew runner. Only process,
 // config and quarantine adapters are mocked to avoid touching the host.
-for (const mode of ["success", "partial", "lifecycle"]) {
+for (const mode of ["success", "partial", "lifecycle", "planning-failure"]) {
   test.skipIf(process.platform !== "darwin")(`CLI exits correctly after ${mode} run and remaining explicit requests`, async () => {
     const root = await mkdtemp(join(tmpdir(), "bouncer-cli-fixture-"));
     const src = new URL("../", import.meta.url).pathname;
@@ -39,6 +39,21 @@ if (args[0] === "outdated") {
 } else if (args[0] === "info" && args.includes("--installed")) {
   console.log(JSON.stringify({ casks: [], formulae: Object.entries(versions).map(([name,version]) => ({ name, installed: [{ version }] })) }));
 } else if (args[0] === "upgrade") {
+  if (args.includes("--dry-run")) {
+    appendFileSync(root + "/plans", JSON.stringify(args) + "\\n");
+    if (mode === "planning-failure") {
+      console.error("Error: fixture dependency planning failed");
+      process.exit(1);
+    }
+    console.log("==> Would upgrade 1 dependency:\\npycparser 3.11 -> 3.12");
+    process.exit(0);
+  }
+  // Model Homebrew's expanded-plan approval: execution without --no-ask
+  // must fail this fixture instead of silently accepting redirected stdin.
+  if (!args.includes("--no-ask")) {
+    console.error("Do you want to proceed with the upgrade? [y/n]");
+    process.exit(91);
+  }
   const name = args.at(-1);
   appendFileSync(root + "/requests", name + "\\n");
   if (mode === "partial" && name === "fixture-first") {
@@ -62,6 +77,19 @@ mock.module(${JSON.stringify(join(src, "quarantine.ts"))}, () => ({ enumeratePac
       });
       const [stdout, stderr, exit] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
       expect({ exit, stderr }).toMatchObject({ exit: mode === "success" ? 0 : 1 });
+      expect(JSON.parse((await readFile(join(root, "plans"), "utf8")).trim())).toEqual([
+        "upgrade", "--dry-run", "fixture-first", "fixture-second",
+      ]);
+      expect(stderr).not.toContain("Do you want to proceed with the upgrade?");
+      if (mode === "planning-failure") {
+        expect(await Bun.file(join(root, "requests")).exists()).toBe(false);
+        expect(stderr).toContain("fixture dependency planning failed");
+        return;
+      }
+      expect(stdout.indexOf("pycparser")).toBeLessThan(stdout.indexOf("fixture upgraded"));
+      expect(stdout.match(/The following packages will be/g)).toHaveLength(1);
+      expect(stdout).not.toContain("==> Would upgrade");
+      expect(stdout).not.toContain("Homebrew upgrade plan (including");
       expect(await readFile(join(root, "requests"), "utf8")).toBe("fixture-first\nfixture-second\n");
       expect(stdout).toContain(mode === "partial" ? "1 successful upgrade requests" : "2 successful upgrade requests");
       if (mode === "partial") {

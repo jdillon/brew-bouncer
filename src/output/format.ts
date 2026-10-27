@@ -65,6 +65,7 @@ export function renderPackageTable(
   packages: OutdatedPackage[],
   detectedMap?: Map<string, DetectedApp>,
   executionAssessments?: Map<string, ExecutionTargetAssessment>,
+  planReasons?: Map<string, string>,
 ): string {
   const table = new Table({
     chars: borderlessChars,
@@ -73,15 +74,17 @@ export function renderPackageTable(
 
   for (const pkg of packages) {
     const detected = detectedMap?.get(pkg.name);
-    const statusCell = detected
+    const runningStatus = detected
       ? formatStatus(detected, executionAssessments?.get(pkg.name))
       : "";
+    const statusCell = [runningStatus, planReasons?.has(pkg.name) ? chalk.dim(planReasons.get(pkg.name)!) : ""]
+      .filter(Boolean).join(" · ");
     const typeIcon = pkg.type === "cask" ? "🍷" : "🍺";
 
     table.push([
       typeIcon,
       chalk.white(pkg.name),
-      chalk.red(shortVersion(pkg.installedVersions[0] ?? "")),
+      chalk.red(shortVersion(pkg.installedVersions[0] ?? "new")),
       chalk.dim("→"),
       chalk.green(shortVersion(pkg.currentVersion)),
       statusCell,
@@ -109,10 +112,12 @@ export function renderSkipped(skipped: OutdatedPackage[]): void {
 export function renderSummary(
   actionableCount: number,
   restartCount: number,
-  skippedCount: number
+  skippedCount: number,
+  installCount = 0,
 ): void {
   const parts: string[] = [];
   parts.push(`${chalk.bold(String(actionableCount))} to upgrade`);
+  if (installCount > 0) parts.push(`${chalk.bold(String(installCount))} to install`);
   if (restartCount > 0) {
     parts.push(`${chalk.yellow.bold(String(restartCount))} need restart`);
   }

@@ -70,6 +70,11 @@ If omitted, the built-in defaults remain `yes` for upgrade confirmation and
 `--yes` overrides these defaults and answers yes to every upgrade, restart,
 and quarantine-removal prompt.
 
+The upgrade preview includes Homebrew's planned dependency installs and
+dependent upgrades in the same table. Changing the package selection refreshes
+the preview for approval. Execution uses `--no-ask` to avoid repeated
+Homebrew upgrade confirmations; installer and privilege prompts remain interactive.
+
 ## Building from source
 
 Requires [Moon](https://moonrepo.dev). The repository pins Bun; setup installs
