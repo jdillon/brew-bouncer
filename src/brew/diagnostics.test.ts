@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 import { expect, test } from "bun:test";
-import { collectUpgradeDiagnostics, normalizeTerminalOutput } from "./diagnostics.ts";
+import { collectUpgradeDiagnostics, groupDiagnostics, normalizeTerminalOutput } from "./diagnostics.ts";
 
 test("diagnostics preserve multiline permission/rollback and command-shadowing context", () => {
   const output = "progress 1%\rprogress 100%\r\n\x1b[31mError: chmod failed\x1b[0m\r\n  /Applications/Fixture.app/installer.sh: Operation not permitted\r\nAttempting rollback\r\n\r\n==> Caveats\r\nThe opencode command is shadowed by:\r\n  /Users/fixture/.nvm/bin/opencode\r\n\r\n==> Summary\r\nInstalled successfully\r\n";
@@ -34,4 +34,26 @@ test("shadow caveats include base verb and tightly preceding conflicting path", 
   expect(collectUpgradeDiagnostics("opencode", "The executable at /Users/fixture/.nvm/bin/opencode will shadow Homebrew's opencode.\n", "")[0]?.message).toContain("/Users/fixture/.nvm/bin/opencode");
   expect(collectUpgradeDiagnostics("opencode", "/Users/fixture/.nvm/bin/opencode\nThis command takes precedence in PATH.\n", "")[0]?.message).toContain("/Users/fixture/.nvm/bin/opencode");
   expect(collectUpgradeDiagnostics("fixture", "==> Caveats\nEnabled shadow rendering support\n", "")).toEqual([]);
+});
+
+test("grouping merges repeated messages with a count and assigns tiers", () => {
+  const groups = groupDiagnostics([
+    { packageName: "a", level: "warning", message: "Warning: shared" },
+    { packageName: "b", level: "warning", message: "Warning: shared" },
+    { packageName: "b", level: "warning", message: "Warning: shared" },
+    { packageName: "a", level: "warning", message: "Warning: only a" },
+    { packageName: "a", level: "error", message: "Error: failed" },
+    { packageName: "a", level: "warning", message: "Warning: Calling depends_on :macos is deprecated!" },
+    { packageName: "a", level: "warning", tier: "important", message: "Bouncer note" },
+    { packageName: "b", level: "warning", tier: "important", message: "Bouncer note" },
+    { packageName: "a", level: "warning", tier: "action", message: "Re-grant" },
+  ]);
+  expect(groups.map(({ tier, message, packages, count }) => [tier, message, packages.join(","), count])).toEqual([
+    ["action", "Error: failed", "a", 1],
+    ["action", "Re-grant", "a", 1],
+    ["important", "Warning: only a", "a", 1],
+    ["important", "Bouncer note", "a,b", 2],
+    ["noise", "Warning: shared", "a,b", 3],
+    ["noise", "Warning: Calling depends_on :macos is deprecated!", "a", 1],
+  ]);
 });

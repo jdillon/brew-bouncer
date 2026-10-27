@@ -18,6 +18,7 @@ import { upgrade } from "./upgrade.ts";
 import type { DetectedApp } from "../detect/matcher.ts";
 import type { ExecutionContext } from "../detect/execution-context.ts";
 import type { OutdatedPackage } from "../brew/parser.ts";
+import type { PermissionInspection } from "../permissions.ts";
 
 const app: DetectedApp = {
   packageName: "example", oldVersion: "1", newVersion: "2",
@@ -50,6 +51,8 @@ function fixture() {
       running.filter((app) => packages.some((pkg) => pkg.name === app.packageName))),
     inspectExecutionContext: mock(async () => knownContext),
     enumeratePackageExecutables: async () => new Map<string, string[]>(),
+    inspectPackagePermissions: mock(async (): Promise<PermissionInspection> => ({ tccReadable: true, apps: [] })),
+    findStaleGrants: mock(async (): Promise<string[]> => []),
     confirmUpgrade: mock(async () => "yes" as "yes" | "no" | "select"),
     selectPackages: mock(async (packages: OutdatedPackage[]) => packages),
     confirmRestartPolicy: mock(async () => "yes" as "yes" | "ask" | "no"),
@@ -597,4 +600,34 @@ test("a headless target needs no execution-context probes after preview", async 
   expect(run.result.exitCode).toBe(0);
   expect(d.inspectExecutionContext).toHaveBeenCalledTimes(1);
   expect(run.output).not.toContain("Manual restart/check required");
+});
+
+test("stale privacy grants are action items and repeated Homebrew warnings collapse into counted noise", async () => {
+  const { dependencies: d, setRunning } = fixture();
+  setRunning([]);
+  const tapWarning = "Warning: fixture/tap is deprecated and will be removed.";
+  d.brewOutdated.mockImplementation(async () => ({ ...success, stdout: JSON.stringify({ formulae: [], casks:
+    ["example", "second"].map((name) => ({ name, installed_versions: ["1"], current_version: "2" })),
+  }) }));
+  d.brewUpgradePreview.mockImplementation(async (names) => ({ ...success, stderr: `${tapWarning}\n`,
+    stdout: `==> Would upgrade ${names.length} requested outdated packages\n${names.map((name) => `${name} 1 -> 2`).join("\n")}\n` }));
+  d.brewUpgrade.mockImplementation(async (name) => ({ ...success, stderr: `${tapWarning}\n${name === "second"
+    ? "==> Caveats\nThe second command is shadowed by:\n  /Users/fixture/bin/second\n" : ""}` }));
+  const grant = { service: "kTCCServiceAccessibility", requirement: new Uint8Array([1]) };
+  d.inspectPackagePermissions.mockImplementation(async () => ({ tccReadable: true, apps: [
+    { packageName: "example", appPath: "/Applications/Example.app", grants: [grant], pinned: [grant.service], adhocUnverified: false },
+  ] }));
+  d.findStaleGrants.mockImplementation(async () => ["kTCCServiceAccessibility"]);
+  const run = await captureRun(() => upgrade({ yes: true, verbose: false }, d));
+  expect(run.result.exitCode).toBe(0);
+  expect(run.output).toContain("🔐 Privacy permissions at risk:\n  Example: Accessibility pinned to this build");
+  const summary = run.output.slice(run.output.indexOf("Warnings and errors"));
+  expect(summary).toContain("Accessibility permission no longer matches the upgraded Example");
+  expect(summary).toContain("Privacy_Accessibility");
+  expect(summary.match(/fixture\/tap is deprecated/g)).toHaveLength(1);
+  expect(summary).toContain("Homebrew plan, example, second (×3)");
+  const order = ["🛑 Action needed", "⚠️  Important", "💤 Noise"].map((heading) => summary.indexOf(heading));
+  expect(order).toEqual([...order].sort((a, b) => a - b));
+  expect(order.every((index) => index >= 0)).toBe(true);
+  if (process.env.SHOW_SUMMARY) process.stderr.write(`${summary}\n`);
 });
