@@ -17,6 +17,7 @@ import { expect, mock, spyOn, test } from "bun:test";
 import { upgrade } from "./upgrade.ts";
 import type { DetectedApp } from "../detect/matcher.ts";
 import type { ExecutionContext } from "../detect/execution-context.ts";
+import type { OutdatedPackage } from "../brew/parser.ts";
 
 const app: DetectedApp = {
   packageName: "example", oldVersion: "1", newVersion: "2",
@@ -43,11 +44,14 @@ function fixture() {
     }) })),
     brewInfoJson: mock(async () => ({ ...success, stdout: JSON.stringify({ formulae: [], casks: [] }) })),
     brewUpgrade: mock(async (_name: string, _options?: { noQuit?: boolean }) => success),
+    brewUpgradePreview: mock(async (names: string[]) => ({ ...success,
+      stdout: `==> Would upgrade ${names.length} requested outdated packages\n${names.map((name) => `${name} 1 -> 2`).join("\n")}\n` })),
     detectRunningUpgrades: mock(async (packages: Array<{ name: string }>) =>
       running.filter((app) => packages.some((pkg) => pkg.name === app.packageName))),
     inspectExecutionContext: mock(async () => knownContext),
     enumeratePackageExecutables: async () => new Map<string, string[]>(),
-    confirmUpgrade: mock(async () => "yes" as const),
+    confirmUpgrade: mock(async () => "yes" as "yes" | "no" | "select"),
+    selectPackages: mock(async (packages: OutdatedPackage[]) => packages),
     confirmRestartPolicy: mock(async () => "yes" as "yes" | "ask" | "no"),
     confirmRestart: mock(async () => "yes" as const),
     doQuit: mock(async () => "stopped" as "stopped" | "already-stopped" | "unknown"),
@@ -57,6 +61,95 @@ function fixture() {
   return { dependencies, setRunning: (apps: DetectedApp[]) => { running = apps; } };
 }
 const interactive = { yes: false, verbose: false };
+
+test("dependency expansion is shown before the single upgrade approval", async () => {
+  const { dependencies: d } = fixture();
+  const output = spyOn(console, "log").mockImplementation(() => {});
+  const order: string[] = [];
+  d.brewUpgradePreview.mockImplementation(async (names) => {
+    expect(names).toEqual(["example"]);
+    order.push("plan");
+    return { ...success, stdout: "==> Would upgrade 1 dependency:\npycparser 3.11 -> 3.12" };
+  });
+  d.confirmUpgrade.mockImplementation(async () => {
+    const preview = output.mock.calls.flat().join("\n");
+    expect(preview).toContain("pycparser");
+    expect(preview).toContain("dependency");
+    expect(preview).not.toContain("==> Would upgrade");
+    order.push("approve");
+    return "yes";
+  });
+  d.brewUpgrade.mockImplementation(async () => { order.push("upgrade"); return success; });
+  try {
+    expect((await upgrade(interactive, d)).exitCode).toBe(0);
+    expect(order).toEqual(["plan", "approve", "upgrade"]);
+    expect(d.confirmUpgrade).toHaveBeenCalledTimes(1);
+  } finally { output.mockRestore(); }
+});
+
+test("one approval preview includes installs and running dependents without raw Homebrew noise", async () => {
+  const { dependencies: d, setRunning } = fixture();
+  setRunning([app, { ...app, packageName: "node", kind: "formula-cli", bundlePath: undefined }]);
+  d.brewUpgradePreview.mockImplementation(async () => ({ ...success, stdout: `
+==> Would install 1 dependency:
+icu4c@79 79.1
+==> Would upgrade 1 requested outdated package
+example 1 -> 2
+==> Would upgrade 1 dependent
+node 26.12.0 -> 26.12.1
+==> Downloading bottle manifests
+✔︎ Bottle Manifest node (26.12.1)
+` }));
+  d.confirmUpgrade.mockImplementation(async () => "no");
+  const { output } = await captureRun(() => upgrade(interactive, d));
+  expect(output.match(/The following packages will be/g)).toHaveLength(1);
+  for (const name of ["example", "node", "icu4c@79"]) {
+    expect(output.split("\n").filter((line) => line.includes(name) && line.includes("→"))).toHaveLength(1);
+  }
+  expect(output).toContain("2 to upgrade · 1 to install · 2 need restart");
+  expect(output).not.toContain("==> Would");
+  expect(output).not.toContain("Bottle Manifest");
+  expect(d.brewUpgrade).not.toHaveBeenCalled();
+});
+
+test("declining the expanded plan never starts an upgrade or quits an app", async () => {
+  const { dependencies: d } = fixture();
+  d.confirmUpgrade.mockImplementation(async () => "no");
+  expect((await upgrade(interactive, d)).exitCode).toBe(0);
+  expect(d.brewUpgradePreview).toHaveBeenCalledTimes(1);
+  expect(d.brewUpgrade).not.toHaveBeenCalled();
+  expect(d.doQuit).not.toHaveBeenCalled();
+});
+
+for (const failure of ["exit", "throw"]) {
+  test(`planning ${failure} stops before confirmation, lifecycle actions or package changes`, async () => {
+    const { dependencies: d } = fixture();
+    d.brewUpgradePreview.mockImplementation(async () => {
+      if (failure === "throw") throw new Error("planning spawn failed");
+      return { stdout: "", stderr: "Error: dependency planning failed", exitCode: 1 };
+    });
+    expect((await upgrade({ yes: true, verbose: false }, d)).exitCode).toBe(1);
+    expect(d.confirmUpgrade).not.toHaveBeenCalled();
+    expect(d.confirmRestartPolicy).not.toHaveBeenCalled();
+    expect(d.brewUpgrade).not.toHaveBeenCalled();
+    expect(d.doQuit).not.toHaveBeenCalled();
+  });
+}
+
+test("selection changes are replanned and approved before any upgrade", async () => {
+  const { dependencies: d } = fixture();
+  d.brewOutdated.mockImplementation(async () => ({ ...success, stdout: JSON.stringify({
+    formulae: [], casks: ["example", "second"].map((name) => ({
+      name, installed_versions: ["1"], current_version: "2",
+    })),
+  }) }));
+  d.confirmUpgrade.mockResolvedValueOnce("select").mockResolvedValueOnce("yes");
+  d.selectPackages.mockImplementation(async (packages) => packages.filter((p) => p.name === "second"));
+  expect((await upgrade(interactive, d)).exitCode).toBe(0);
+  expect(d.brewUpgradePreview.mock.calls).toEqual([[["example", "second"]], [["second"]]]);
+  expect(d.confirmUpgrade).toHaveBeenCalledTimes(2);
+  expect(d.brewUpgrade.mock.calls.map(([name]) => name)).toEqual(["second"]);
+});
 
 test("an app closed at upgrade confirmation stays closed despite the preview restart policy", async () => {
   const { dependencies: d, setRunning } = fixture();
@@ -259,6 +352,9 @@ test("proceeding shows one package preview and defers rechecking until the packa
     await upgrade(interactive, d);
     const messages = output.mock.calls.map(([message]) => String(message));
     expect(messages.filter((message) => message.includes("restart needed"))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes("The following packages will be"))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes("to upgrade"))).toHaveLength(1);
+    expect(messages.some((message) => message.includes("Homebrew upgrade plan ("))).toBe(false);
     expect(messages.some((message) => message.includes("Current running status"))).toBe(false);
     expect(d.doQuit).toHaveBeenCalledTimes(1);
     expect(d.doReopen).toHaveBeenCalledTimes(1);

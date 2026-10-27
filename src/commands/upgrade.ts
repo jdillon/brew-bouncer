@@ -18,6 +18,7 @@ import {
   brewUpdate,
   brewOutdated,
   brewUpgrade,
+  brewUpgradePreview,
   brewInfoJson,
   exec,
   formatExecFailure,
@@ -54,6 +55,7 @@ import chalk from "chalk";
 import { collectUpgradeDiagnostics, type UpgradeDiagnostic } from "../brew/diagnostics.ts";
 import { installedChanges, packageKey, parseInstalled, type InstalledState } from "../brew/state.ts";
 import type { OutdatedPackage } from "../brew/parser.ts";
+import { parseUpgradePreview, type UpgradePreview } from "../brew/plan.ts";
 
 interface UpgradeOptions {
   yes: boolean;
@@ -64,7 +66,7 @@ interface UpgradeOptions {
 export interface UpgradeResult { exitCode: number }
 
 const defaultUpgradeDependencies = {
-  brewInstalled, brewUpdate, brewOutdated, brewUpgrade, brewInfoJson, exec,
+  brewInstalled, brewUpdate, brewOutdated, brewUpgrade, brewUpgradePreview, brewInfoJson, exec,
   detectRunningUpgrades, inspectExecutionContext, loadConfig,
   enumeratePackageExecutables, isQuarantined,
   confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart,
@@ -78,7 +80,7 @@ export async function upgrade(
   dependencyOverrides: Partial<typeof defaultUpgradeDependencies> = {},
 ): Promise<UpgradeResult> {
   const {
-    brewInstalled, brewUpdate, brewOutdated, brewUpgrade, brewInfoJson, exec,
+    brewInstalled, brewUpdate, brewOutdated, brewUpgrade, brewUpgradePreview, brewInfoJson, exec,
     detectRunningUpgrades, inspectExecutionContext, loadConfig,
     enumeratePackageExecutables, isQuarantined,
     confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart,
@@ -180,57 +182,86 @@ export async function upgrade(
     return { exitCode: 0 };
   }
 
-  // Step 5: Detect running processes BEFORE showing preview
-  const s3 = spinner("Checking running processes...");
-  const preDetected = await detectRunningUpgrades(targets, (msg) => s3.update(msg));
-  const detectedMap = new Map(preDetected.map((d) => [d.packageName, d]));
-  s3.update("checking Brew Bouncer execution context");
-  const previewExecutionContext = await inspectExecutionContext();
-  const previewExecutionAssessments = new Map(
-    preDetected.map((app) => [
-      app.packageName,
-      assessExecutionTarget(app, previewExecutionContext),
-    ]),
-  );
-  const executionContextCount = [...previewExecutionAssessments.values()]
-    .filter((assessment) => assessment.membership === "host").length;
-  if (preDetected.length === 0) {
-    s3.done("No running apps will be affected");
-  } else if (previewExecutionContext.status === "unknown") {
-    s3.done(`${preDetected.length} running app(s); execution context not fully verified`);
-  } else if (executionContextCount > 0) {
-    s3.done(`${preDetected.length} running app(s), ${executionContextCount} in Brew Bouncer's execution context`);
-  } else {
-    s3.done(`${preDetected.length} running app(s) will need restarting`);
-  }
+  let detectedMap = new Map<string, DetectedApp>();
+  let previewExecutionContext!: ExecutionContext;
+  let previewExecutionAssessments = new Map<string, ExecutionTargetAssessment>();
+  let packageExecutables = new Map<string, string[]>();
+  let planningDiagnostics: UpgradeDiagnostic[] = [];
 
-  // Step 5b: Enumerate executable paths for all upgrade targets.
-  // Quarantine is checked post-upgrade (not pre) so executables that shipped
-  // quarantined and were never manually approved still get handled.
-  const s4 = spinner("Enumerating package executables...");
-  const packageExecutables = await enumeratePackageExecutables(
-    targets,
-    caskInfoParsed?.casks ?? []
-  );
-  const executableCount = [...packageExecutables.values()].reduce((n, paths) => n + paths.length, 0);
-  if (executableCount === 0) {
-    s4.done("No executables found to check for quarantine");
-  } else {
-    s4.done(`${executableCount} executable(s) will be checked for quarantine post-upgrade`);
-  }
+  // Resolve changes before rendering the one preview. Selection regenerates
+  // both the plan and affected-process observations before approval.
+  while (true) {
+    const planning = spinner("Resolving Homebrew upgrade plan...");
+    let plan: UpgradePreview;
+    try {
+      const preview = await brewUpgradePreview(targets.map((pkg) => pkg.name));
+      if (preview.exitCode !== 0) {
+        planning.fail("Homebrew upgrade planning failed; no upgrades started");
+        console.error(formatExecFailure("brew upgrade --dry-run", preview));
+        return { exitCode: 1 };
+      }
+      plan = parseUpgradePreview(`${preview.stdout}\n${preview.stderr}`, targets, allOutdated);
+      planningDiagnostics = collectUpgradeDiagnostics("Homebrew plan", preview.stdout, preview.stderr);
+    } catch (error) {
+      planning.fail("Homebrew upgrade planning failed; no upgrades started");
+      console.error(error instanceof Error ? error.message : String(error));
+      return { exitCode: 1 };
+    }
+    planning.done("Homebrew upgrade plan resolved");
+    const selectedKeys = new Set(targets.map(packageKey));
+    targets = plan.packages.filter((pkg) => selectedKeys.has(packageKey(pkg)));
 
-  // Step 6: Show preview and confirm
-  console.log(chalk.bold(`\nThe following packages will be upgraded (${targets.length}):\n`));
-  console.log(renderPackageTable(targets, detectedMap, previewExecutionAssessments));
-  renderExecutionContextPreview(targets, detectedMap, previewExecutionAssessments);
+    // Step 5: Detect running processes BEFORE showing preview
+    const s3 = spinner("Checking running processes...");
+    const preDetected = await detectRunningUpgrades(plan.packages, (msg) => s3.update(msg));
+    detectedMap = new Map(preDetected.map((d) => [d.packageName, d]));
+    s3.update("checking Brew Bouncer execution context");
+    previewExecutionContext = await inspectExecutionContext();
+    previewExecutionAssessments = new Map(
+      preDetected.map((app) => [
+        app.packageName,
+        assessExecutionTarget(app, previewExecutionContext),
+      ]),
+    );
+    const executionContextCount = [...previewExecutionAssessments.values()]
+      .filter((assessment) => assessment.membership === "host").length;
+    if (preDetected.length === 0) {
+      s3.done("No running apps will be affected");
+    } else if (previewExecutionContext.status === "unknown") {
+      s3.done(`${preDetected.length} running app(s); execution context not fully verified`);
+    } else if (executionContextCount > 0) {
+      s3.done(`${preDetected.length} running app(s), ${executionContextCount} in Brew Bouncer's execution context`);
+    } else {
+      s3.done(`${preDetected.length} running app(s) will need restarting`);
+    }
 
-  if (skipped.length > 0 && !options.only) {
-    renderSkipped(skipped);
-  }
+    // Step 5b: Enumerate executable paths for all upgrade targets.
+    // Quarantine is checked post-upgrade (not pre) so executables that shipped
+    // quarantined and were never manually approved still get handled.
+    const s4 = spinner("Enumerating package executables...");
+    packageExecutables = await enumeratePackageExecutables(
+      targets,
+      caskInfoParsed?.casks ?? []
+    );
+    const executableCount = [...packageExecutables.values()].reduce((n, paths) => n + paths.length, 0);
+    if (executableCount === 0) {
+      s4.done("No executables found to check for quarantine");
+    } else {
+      s4.done(`${executableCount} executable(s) will be checked for quarantine post-upgrade`);
+    }
 
-  renderSummary(targets.length, detectedMap.size, skipped.length);
+    // Step 6: Show preview and confirm
+    const installs = plan.packages.filter((pkg) => pkg.installedVersions.length === 0).length;
+    console.log(chalk.bold(`\nThe following packages will be ${installs ? "changed" : "upgraded"} (${plan.packages.length}):\n`));
+    console.log(renderPackageTable(plan.packages, detectedMap, previewExecutionAssessments, plan.reasons));
+    renderExecutionContextPreview(plan.packages, detectedMap, previewExecutionAssessments);
 
-  if (!options.yes) {
+    if (skipped.length > 0 && !options.only) {
+      renderSkipped(skipped);
+    }
+
+    renderSummary(plan.packages.length - installs, detectedMap.size, skipped.length, installs);
+    if (options.yes) break;
     const choice = await confirmUpgrade(
       "Proceed with upgrade?",
       config.promptDefaults.upgrade
@@ -250,10 +281,9 @@ export async function upgrade(
         return { exitCode: 0 };
       }
 
-      console.log(chalk.bold(`\nSelected for upgrade (${targets.length}):\n`));
-      console.log(renderPackageTable(targets, detectedMap, previewExecutionAssessments));
-      renderExecutionContextPreview(targets, detectedMap, previewExecutionAssessments);
+      continue;
     }
+    break;
   }
 
   // Step 7: Ask restart policy from the selected preview. Running state is
@@ -372,7 +402,7 @@ export async function upgrade(
   let unquarantinedCount = 0;
   let quarantineCheckedCount = 0;
   let restartAll = restartPolicy === "yes";
-  const diagnostics: UpgradeDiagnostic[] = [];
+  const diagnostics: UpgradeDiagnostic[] = [...planningDiagnostics];
 
   for (const pkg of targets) {
     const typeIcon = pkg.type === "cask" ? "🍷" : "🍺";

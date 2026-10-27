@@ -201,6 +201,12 @@ export async function brewOutdated(): Promise<ExecResult> {
   return exec(["outdated", "--greedy", "--json"]);
 }
 
+/** Resolve Homebrew's dependency/dependent expansion before Bouncer's approval. */
+export async function brewUpgradePreview(names: string[]): Promise<ExecResult> {
+  if (names.length === 0) throw new Error("Cannot preview an upgrade without explicit package names");
+  return exec(["upgrade", "--dry-run", ...names]);
+}
+
 /**
  * Upgrade a single package with full terminal passthrough.
  * Brew owns stdout/stderr so the user sees all output including
@@ -214,7 +220,9 @@ export function brewUpgradeArgs(
   name: string,
   options: BrewUpgradeOptions = {},
 ): string[] {
-  return ["upgrade", ...(options.noQuit ? ["--no-quit"] : []), name];
+  // This runner is used only after Bouncer's own upgrade approval. Keep other
+  // Homebrew/installer prompts interactive; suppress only duplicate approval.
+  return ["upgrade", "--no-ask", ...(options.noQuit ? ["--no-quit"] : []), name];
 }
 
 export async function brewUpgrade(
