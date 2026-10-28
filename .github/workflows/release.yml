@@ -17,8 +17,6 @@ jobs:
           fetch-depth: 0
 
       - uses: moonrepo/setup-toolchain@v0
-        with:
-          moon-version: '2.5.5'
 
       - run: ./scripts/workspace-setup
 
