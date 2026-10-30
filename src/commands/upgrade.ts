@@ -52,7 +52,15 @@ import { renderPackageTable, renderSkipped, renderSummary } from "../output/form
 import { getVersion } from "../version.ts";
 import { planExecutionSafety } from "../upgrade-policy.ts";
 import chalk from "chalk";
-import { collectUpgradeDiagnostics, type UpgradeDiagnostic } from "../brew/diagnostics.ts";
+import { collectUpgradeDiagnostics, groupDiagnostics, type DiagnosticTier, type UpgradeDiagnostic } from "../brew/diagnostics.ts";
+import {
+  appDisplayName,
+  findStaleGrants,
+  inspectPackagePermissions,
+  permissionLabel,
+  permissionSettingsUrl,
+  type PermissionInspection,
+} from "../permissions.ts";
 import { installedChanges, packageKey, parseInstalled, type InstalledState } from "../brew/state.ts";
 import type { OutdatedPackage } from "../brew/parser.ts";
 import { parseUpgradePreview, type UpgradePreview } from "../brew/plan.ts";
@@ -68,7 +76,7 @@ export interface UpgradeResult { exitCode: number }
 const defaultUpgradeDependencies = {
   brewInstalled, brewUpdate, brewOutdated, brewUpgrade, brewUpgradePreview, brewInfoJson, exec,
   detectRunningUpgrades, inspectExecutionContext, loadConfig,
-  enumeratePackageExecutables, isQuarantined,
+  enumeratePackageExecutables, isQuarantined, inspectPackagePermissions, findStaleGrants,
   confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart,
   confirmQuarantinePolicy, confirmUnquarantine,
   doQuit, doReopen, doRestart, doUnquarantine,
@@ -82,11 +90,11 @@ export async function upgrade(
   const {
     brewInstalled, brewUpdate, brewOutdated, brewUpgrade, brewUpgradePreview, brewInfoJson, exec,
     detectRunningUpgrades, inspectExecutionContext, loadConfig,
-    enumeratePackageExecutables, isQuarantined,
+    enumeratePackageExecutables, isQuarantined, inspectPackagePermissions, findStaleGrants,
     confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart,
     confirmQuarantinePolicy, confirmUnquarantine,
     doQuit, doReopen, doRestart, doUnquarantine,
-  } = { ...defaultUpgradeDependencies, ...dependencyOverrides };
+  } ={ ...defaultUpgradeDependencies, ...dependencyOverrides };
   log.debug("brew-bouncer {version}", { version: getVersion() });
   const config = await loadConfig();
 
@@ -186,6 +194,7 @@ export async function upgrade(
   let previewExecutionContext!: ExecutionContext;
   let previewExecutionAssessments = new Map<string, ExecutionTargetAssessment>();
   let packageExecutables = new Map<string, string[]>();
+  let permissions: PermissionInspection = { tccReadable: true, apps: [] };
   let planningDiagnostics: UpgradeDiagnostic[] = [];
 
   // Resolve changes before rendering the one preview. Selection regenerates
@@ -250,11 +259,27 @@ export async function upgrade(
       s4.done(`${executableCount} executable(s) will be checked for quarantine post-upgrade`);
     }
 
+    // Step 5c: Privacy grants bound to the installed build's hash do not carry
+    // over to the new build. Read-only: Brew Bouncer only warns and guides.
+    const s5 = spinner("Checking privacy permission grants...");
+    try {
+      permissions = await inspectPackagePermissions(packageExecutables);
+      const atRisk = permissions.apps.filter((a) => a.pinned.length > 0 || a.adhocUnverified).length;
+      const unreadable = permissions.tccReadable ? "" : " (grants unreadable without Full Disk Access; checked signatures only)";
+      s5.done(atRisk
+        ? `${atRisk} app(s) hold privacy permissions that will likely need re-granting${unreadable}`
+        : `No privacy permissions at risk${unreadable}`);
+    } catch (error) {
+      permissions = { tccReadable: false, apps: [] };
+      s5.fail(`Privacy permission check failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
     // Step 6: Show preview and confirm
     const installs = plan.packages.filter((pkg) => pkg.installedVersions.length === 0).length;
     console.log(chalk.bold(`\nThe following packages will be ${installs ? "changed" : "upgraded"} (${plan.packages.length}):\n`));
     console.log(renderPackageTable(plan.packages, detectedMap, previewExecutionAssessments, plan.reasons));
     renderExecutionContextPreview(plan.packages, detectedMap, previewExecutionAssessments);
+    renderPermissionPreview(permissions);
 
     if (skipped.length > 0 && !options.only) {
       renderSkipped(skipped);
@@ -538,7 +563,7 @@ export async function upgrade(
       try {
         const result = await brewUpgrade(pkg.name, { noQuit: suppressHomebrewQuit });
         diagnostics.push(...collectUpgradeDiagnostics(pkg.name, result.stdout, result.stderr));
-        if (result.diagnosticsIncomplete) diagnostics.push({ packageName: pkg.name, level: "warning",
+        if (result.diagnosticsIncomplete) diagnostics.push({ packageName: pkg.name, level: "warning", tier: "important",
           message: "Mixed terminal/redirection: some output was displayed directly and could not be summarized; inspect the live output." });
         if (result.exitCode !== 0) {
           throw new Error(`exited with status ${result.exitCode}`);
@@ -578,7 +603,7 @@ export async function upgrade(
       } catch {
         refreshedOutdated = null;
         observationFailed = true;
-        diagnostics.push({ packageName: pkg.name, level: "warning",
+        diagnostics.push({ packageName: pkg.name, level: "warning", tier: "important",
           message: "Could not refresh outdated state; remaining explicit targets will still be attempted." });
       }
       const changedPackages = before && observed ? installedChanges(before, observed) : [];
@@ -648,6 +673,30 @@ export async function upgrade(
             if (ok) unquarantinedCount++;
           }
         }
+      }
+    }
+
+    // Compare stored grants with the build now on disk; this also catches a
+    // signed app that changed team, and a failed upgrade that replaced files.
+    for (const held of permissions.apps.filter((a) => a.packageName === pkg.name)) {
+      const name = appDisplayName(held.appPath);
+      if (held.adhocUnverified) {
+        if (!upgradeFailed) diagnostics.push({ packageName: pkg.name, level: "warning", tier: "important",
+          message: `🔐 ${name} is ad-hoc signed, so privacy permissions it held were likely reset; grants are unreadable without Full Disk Access.\n` +
+            `Check: open "${permissionSettingsUrl("")}"` });
+        continue;
+      }
+      try {
+        const stale = await findStaleGrants(held);
+        const byLabel = new Map(stale.map((service) => [permissionLabel(service), service]));
+        for (const [label, service] of byLabel) {
+          diagnostics.push({ packageName: pkg.name, level: "warning", tier: "action",
+            message: `🔐 ${label} permission no longer matches the upgraded ${name}\n` +
+              `Re-grant: open "${permissionSettingsUrl(service)}", then turn ${name} off and on (remove and re-add it if that does not stick)` });
+        }
+      } catch (error) {
+        diagnostics.push({ packageName: pkg.name, level: "warning", tier: "important",
+          message: `🔐 Could not check privacy permissions for ${name}: ${error instanceof Error ? error.message : String(error)}` });
       }
     }
 
@@ -771,6 +820,20 @@ function renderExecutionContextPreview(
   ));
 }
 
+function renderPermissionPreview(permissions: PermissionInspection): void {
+  const atRisk = permissions.apps.filter((a) => a.pinned.length > 0 || a.adhocUnverified);
+  if (atRisk.length === 0) return;
+
+  console.log(chalk.yellow("🔐 Privacy permissions at risk:"));
+  for (const app of atRisk) {
+    const detail = app.adhocUnverified
+      ? "ad-hoc signed; any privacy permissions it holds will likely need re-granting"
+      : `${[...new Set(app.pinned.map(permissionLabel))].join(", ")} pinned to this build; will likely need re-granting`;
+    console.log(chalk.yellow(`  ${appDisplayName(app.appPath)}: ${detail}`));
+  }
+  console.log(chalk.dim("  Brew Bouncer confirms after the upgrade and lists how to re-grant.\n"));
+}
+
 function renderExecutionProtection(
   packageName: string,
   app: DetectedApp | undefined,
@@ -862,16 +925,22 @@ async function doUnquarantine(path: string): Promise<boolean> {
 function renderDiagnosticsSummary(diagnostics: UpgradeDiagnostic[]): void {
   if (diagnostics.length === 0) return;
 
-  console.log(chalk.bold("\nWarnings and errors\n"));
+  console.log(chalk.bold("\nWarnings and errors"));
 
-  let currentPackage = "";
-  for (const diagnostic of diagnostics) {
-    if (diagnostic.packageName !== currentPackage) {
-      currentPackage = diagnostic.packageName;
-      console.log(chalk.bold(diagnostic.packageName));
+  let currentTier = "";
+  for (const group of groupDiagnostics(diagnostics)) {
+    if (group.tier !== currentTier) {
+      currentTier = group.tier;
+      console.log(`\n${TIER_HEADINGS[group.tier]}`);
     }
-
-    const icon = diagnostic.level === "error" ? chalk.red("✗") : chalk.yellow("!");
-    console.log(`  ${icon} ${diagnostic.message.replace(/\n/g, "\n    ")}`);
+    const repeats = group.count > 1 ? chalk.dim(` (×${group.count})`) : "";
+    const text = `  ${chalk.bold(group.packages.join(", "))}${repeats}\n    ${group.message.replace(/\n/g, "\n    ")}`;
+    console.log(group.tier === "noise" ? chalk.dim(text) : text);
   }
 }
+
+const TIER_HEADINGS: Record<DiagnosticTier, string> = {
+  action: chalk.bold.red("🛑 Action needed"),
+  important: chalk.bold.yellow("⚠️  Important"),
+  noise: chalk.bold.dim("💤 Noise"),
+};
