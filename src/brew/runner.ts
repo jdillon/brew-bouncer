@@ -204,35 +204,11 @@ export async function brewOutdated(): Promise<ExecResult> {
 
 /** Resolve Homebrew's dependency/dependent expansion before Bouncer's approval. */
 export async function brewUpgradePreview(
-  packages: Array<Pick<OutdatedPackage, "name" | "type">>,
+  names: string[],
+  type: OutdatedPackage["type"],
 ): Promise<ExecResult> {
-  const commands = brewUpgradePreviewArgs(packages);
-  if (commands.length === 0) throw new Error("Cannot preview an upgrade without explicit package names");
-  const results: ExecResult[] = [];
-  for (const args of commands) {
-    const result = await exec(args);
-    if (result.exitCode !== 0) return result;
-    results.push(result);
-  }
-  return {
-    exitCode: 0,
-    stdout: results.map((result) => result.stdout).join("\n"),
-    stderr: results.map((result) => result.stderr).join("\n"),
-  };
-}
-
-/**
- * A bare name shared by a formula and a cask resolves to the cask, so every
- * name carries its type. `--formula` and `--cask` are mutually exclusive,
- * which means one dry run per type.
- */
-export function brewUpgradePreviewArgs(
-  packages: Array<Pick<OutdatedPackage, "name" | "type">>,
-): string[][] {
-  return (["formula", "cask"] as const).flatMap((type) => {
-    const names = packages.filter((pkg) => pkg.type === type).map((pkg) => pkg.name);
-    return names.length ? [["upgrade", "--dry-run", `--${type}`, ...names]] : [];
-  });
+  if (names.length === 0) throw new Error("Cannot preview an upgrade without explicit package names");
+  return exec(["upgrade", "--dry-run", `--${type}`, ...names]);
 }
 
 /**

@@ -20,6 +20,7 @@ import type { DetectedApp } from "./detect/matcher.ts";
 import type { ExecutionTargetAssessment } from "./detect/execution-context.ts";
 import { shortVersion, formatStatus } from "./output/format.ts";
 import chalk from "chalk";
+import { packageKey } from "./brew/state.ts";
 
 export type ConfirmChoice = "yes" | "no" | "select";
 export type PolicyChoice = "yes" | "ask" | "no";
@@ -141,7 +142,7 @@ export async function selectPackages(
 
     return {
       name: label,
-      value: pkg.name,
+      value: packageKey(pkg),
       checked: true,
     };
   });
@@ -172,7 +173,7 @@ export async function selectPackages(
   });
 
   const selectedSet = new Set(selected);
-  return packages.filter((p) => selectedSet.has(p.name));
+  return packages.filter((p) => selectedSet.has(packageKey(p)));
 }
 
 /**

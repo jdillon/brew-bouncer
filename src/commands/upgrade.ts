@@ -63,7 +63,7 @@ import {
 } from "../permissions.ts";
 import { installedChanges, packageKey, parseInstalled, type InstalledState } from "../brew/state.ts";
 import type { OutdatedPackage } from "../brew/parser.ts";
-import { parseUpgradePreview, type UpgradePreview } from "../brew/plan.ts";
+import { parseUpgradePreviewRuns, type UpgradePreview } from "../brew/plan.ts";
 
 interface UpgradeOptions {
   yes: boolean;
@@ -205,14 +205,21 @@ export async function upgrade(
     const planning = spinner("Resolving Homebrew upgrade plan...");
     let plan: UpgradePreview;
     try {
-      const preview = await brewUpgradePreview(targets);
-      if (preview.exitCode !== 0) {
-        planning.fail("Homebrew upgrade planning failed; no upgrades started");
-        console.error(formatExecFailure("brew upgrade --dry-run", preview));
-        return { exitCode: 1 };
+      const runs: Array<{ output: string; type: OutdatedPackage["type"] }> = [];
+      planningDiagnostics = [];
+      for (const type of ["formula", "cask"] as const) {
+        const names = targets.filter((pkg) => pkg.type === type).map((pkg) => pkg.name);
+        if (names.length === 0) continue;
+        const preview = await brewUpgradePreview(names, type);
+        if (preview.exitCode !== 0) {
+          planning.fail("Homebrew upgrade planning failed; no upgrades started");
+          console.error(formatExecFailure("brew upgrade --dry-run", preview));
+          return { exitCode: 1 };
+        }
+        runs.push({ output: `${preview.stdout}\n${preview.stderr}`, type });
+        planningDiagnostics.push(...collectUpgradeDiagnostics("Homebrew plan", preview.stdout, preview.stderr));
       }
-      plan = parseUpgradePreview(`${preview.stdout}\n${preview.stderr}`, targets, allOutdated);
-      planningDiagnostics = collectUpgradeDiagnostics("Homebrew plan", preview.stdout, preview.stderr);
+      plan = parseUpgradePreviewRuns(runs, targets, allOutdated);
     } catch (error) {
       planning.fail("Homebrew upgrade planning failed; no upgrades started");
       console.error(error instanceof Error ? error.message : String(error));

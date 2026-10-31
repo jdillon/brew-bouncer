@@ -45,8 +45,8 @@ function fixture() {
     }) })),
     brewInfoJson: mock(async () => ({ ...success, stdout: JSON.stringify({ formulae: [], casks: [] }) })),
     brewUpgrade: mock(async (_name: string, _options?: { noQuit?: boolean; type?: "formula" | "cask" }) => success),
-    brewUpgradePreview: mock(async (packages: Array<{ name: string }>) => ({ ...success,
-      stdout: `==> Would upgrade ${packages.length} requested outdated packages\n${packages.map(({ name }) => `${name} 1 -> 2`).join("\n")}\n` })),
+    brewUpgradePreview: mock(async (names: string[], _type: "formula" | "cask") => ({ ...success,
+      stdout: `==> Would upgrade ${names.length} requested outdated packages\n${names.map((name) => `${name} 1 -> 2`).join("\n")}\n` })),
     detectRunningUpgrades: mock(async (packages: Array<{ name: string }>) =>
       running.filter((app) => packages.some((pkg) => pkg.name === app.packageName))),
     inspectExecutionContext: mock(async () => knownContext),
@@ -69,8 +69,8 @@ test("dependency expansion is shown before the single upgrade approval", async (
   const { dependencies: d } = fixture();
   const output = spyOn(console, "log").mockImplementation(() => {});
   const order: string[] = [];
-  d.brewUpgradePreview.mockImplementation(async (packages) => {
-    expect(packages.map((pkg) => pkg.name)).toEqual(["example"]);
+  d.brewUpgradePreview.mockImplementation(async (names) => {
+    expect(names).toEqual(["example"]);
     order.push("plan");
     return { ...success, stdout: "==> Would upgrade 1 dependency:\npycparser 3.11 -> 3.12" };
   });
@@ -149,9 +149,41 @@ test("selection changes are replanned and approved before any upgrade", async ()
   d.confirmUpgrade.mockResolvedValueOnce("select").mockResolvedValueOnce("yes");
   d.selectPackages.mockImplementation(async (packages) => packages.filter((p) => p.name === "second"));
   expect((await upgrade(interactive, d)).exitCode).toBe(0);
-  expect(d.brewUpgradePreview.mock.calls.map(([packages]) => packages.map((pkg) => pkg.name))).toEqual([["example", "second"], ["second"]]);
+  expect(d.brewUpgradePreview.mock.calls).toEqual([[["example", "second"], "cask"], [["second"], "cask"]]);
   expect(d.confirmUpgrade).toHaveBeenCalledTimes(2);
   expect(d.brewUpgrade.mock.calls.map(([name]) => name)).toEqual(["second"]);
+});
+
+test("a formula and cask sharing a name are planned and upgraded separately", async () => {
+  const { dependencies: d } = fixture();
+  d.brewOutdated.mockImplementation(async () => ({ ...success, stdout: JSON.stringify({
+    formulae: [{ name: "linear", installed_versions: ["1"], current_version: "2" }],
+    casks: [{ name: "linear", installed_versions: ["3"], current_version: "4" }],
+  }) }));
+  const output = spyOn(console, "log").mockImplementation(() => {});
+  const result = await upgrade({ yes: true, verbose: false }, d);
+  output.mockRestore();
+  expect(result.exitCode).toBe(0);
+  expect(d.brewUpgradePreview.mock.calls).toEqual([[["linear"], "formula"], [["linear"], "cask"]]);
+  expect(d.brewUpgrade.mock.calls.map(([name, options]) => [name, options?.type])).toEqual([
+    ["linear", "formula"], ["linear", "cask"],
+  ]);
+});
+
+test("selecting one of two same-named packages keeps only its type", async () => {
+  const { dependencies: d } = fixture();
+  d.brewOutdated.mockImplementation(async () => ({ ...success, stdout: JSON.stringify({
+    formulae: [{ name: "linear", installed_versions: ["1"], current_version: "2" }],
+    casks: [{ name: "linear", installed_versions: ["3"], current_version: "4" }],
+  }) }));
+  d.confirmUpgrade.mockImplementationOnce(async () => "select");
+  d.selectPackages.mockImplementation(async (packages) => packages.filter((pkg) => pkg.type === "cask"));
+  const output = spyOn(console, "log").mockImplementation(() => {});
+  const result = await upgrade(interactive, d);
+  output.mockRestore();
+  expect(result.exitCode).toBe(0);
+  expect(d.brewUpgradePreview.mock.calls.at(-1)).toEqual([["linear"], "cask"]);
+  expect(d.brewUpgrade.mock.calls.map(([name, options]) => [name, options?.type])).toEqual([["linear", "cask"]]);
 });
 
 test("an app closed at upgrade confirmation stays closed despite the preview restart policy", async () => {
@@ -609,8 +641,8 @@ test("stale privacy grants are action items and repeated Homebrew warnings colla
   d.brewOutdated.mockImplementation(async () => ({ ...success, stdout: JSON.stringify({ formulae: [], casks:
     ["example", "second"].map((name) => ({ name, installed_versions: ["1"], current_version: "2" })),
   }) }));
-  d.brewUpgradePreview.mockImplementation(async (packages) => ({ ...success, stderr: `${tapWarning}\n`,
-    stdout: `==> Would upgrade ${packages.length} requested outdated packages\n${packages.map(({ name }) => `${name} 1 -> 2`).join("\n")}\n` }));
+  d.brewUpgradePreview.mockImplementation(async (names) => ({ ...success, stderr: `${tapWarning}\n`,
+    stdout: `==> Would upgrade ${names.length} requested outdated packages\n${names.map((name) => `${name} 1 -> 2`).join("\n")}\n` }));
   d.brewUpgrade.mockImplementation(async (name) => ({ ...success, stderr: `${tapWarning}\n${name === "second"
     ? "==> Caveats\nThe second command is shadowed by:\n  /Users/fixture/bin/second\n" : ""}` }));
   const grant = { service: "kTCCServiceAccessibility", requirement: new Uint8Array([1]) };
