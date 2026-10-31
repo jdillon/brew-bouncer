@@ -170,6 +170,20 @@ test("a formula and cask sharing a name are planned and upgraded separately", as
   ]);
 });
 
+test("same-named running packages keep separate detections", async () => {
+  const { dependencies: d, setRunning } = fixture();
+  d.brewOutdated.mockImplementation(async () => ({ ...success, stdout: JSON.stringify({
+    formulae: [{ name: "linear", installed_versions: ["1"], current_version: "2" }],
+    casks: [{ name: "linear", installed_versions: ["3"], current_version: "4" }],
+  }) }));
+  const cask = { ...app, packageName: "linear" };
+  setRunning([cask, { ...cask, kind: "formula-cli", bundlePath: undefined }]);
+  const output = spyOn(console, "log").mockImplementation(() => {});
+  await upgrade(interactive, d);
+  output.mockRestore();
+  expect(d.confirmRestartPolicy).toHaveBeenCalledWith(1, "yes");
+});
+
 test("selecting one of two same-named packages keeps only its type", async () => {
   const { dependencies: d } = fixture();
   d.brewOutdated.mockImplementation(async () => ({ ...success, stdout: JSON.stringify({

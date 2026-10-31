@@ -61,7 +61,7 @@ import {
   permissionSettingsUrl,
   type PermissionInspection,
 } from "../permissions.ts";
-import { installedChanges, packageKey, parseInstalled, type InstalledState } from "../brew/state.ts";
+import { detectedKey, installedChanges, packageKey, parseInstalled, type InstalledState } from "../brew/state.ts";
 import type { OutdatedPackage } from "../brew/parser.ts";
 import { parseUpgradePreviewRuns, type UpgradePreview } from "../brew/plan.ts";
 
@@ -232,12 +232,12 @@ export async function upgrade(
     // Step 5: Detect running processes BEFORE showing preview
     const s3 = spinner("Checking running processes...");
     const preDetected = await detectRunningUpgrades(plan.packages, (msg) => s3.update(msg));
-    detectedMap = new Map(preDetected.map((d) => [d.packageName, d]));
+    detectedMap = new Map(preDetected.map((d) => [detectedKey(d), d]));
     s3.update("checking Brew Bouncer execution context");
     previewExecutionContext = await inspectExecutionContext();
     previewExecutionAssessments = new Map(
       preDetected.map((app) => [
-        app.packageName,
+        detectedKey(app),
         assessExecutionTarget(app, previewExecutionContext),
       ]),
     );
@@ -323,13 +323,13 @@ export async function upgrade(
   // Step 7: Ask restart policy from the selected preview. Running state is
   // checked afresh when each package reaches the upgrade step below.
   const affectedCount = targets.filter((pkg) => {
-    const app = detectedMap.get(pkg.name);
+    const app = detectedMap.get(packageKey(pkg));
     if (!app || isManualRestartOnly(app)) return false;
     return planExecutionSafety(
       pkg,
       app,
       previewExecutionContext,
-      previewExecutionAssessments.get(pkg.name),
+      previewExecutionAssessments.get(packageKey(pkg)),
     ).allowAutomaticLifecycle;
   }).length;
   let restartPolicy: RestartPolicy = "no";
@@ -449,7 +449,7 @@ export async function upgrade(
     let app = (await runningFor([pkg]))[0];
     // Old kegs may have been cleaned up. Retain preview evidence for manual
     // guidance only; it never authorizes a lifecycle action on a stale PID.
-    const earlierApp = alreadyUpdated ? detectedMap.get(pkg.name) : undefined;
+    const earlierApp = alreadyUpdated ? detectedMap.get(packageKey(pkg)) : undefined;
     const decisionContext = await contextFor(pkg, app);
     const decisionAssessment = app
       ? assessExecutionTarget(app, decisionContext)
@@ -620,14 +620,14 @@ export async function upgrade(
         pkg, ...changedPackages.filter((changed) => packageKey(changed) !== packageKey(pkg)),
       ]);
       for (const changed of changedPackages) {
-        if (!targetKeys.has(packageKey(changed)) && detectedMap.has(changed.name)) {
+        if (!targetKeys.has(packageKey(changed)) && detectedMap.has(packageKey(changed))) {
           outstandingRestarts.add(changed.name);
         }
       }
       for (const postApp of postApps) {
-        const changed = changedPackages.find((p) => p.name === postApp.packageName);
+        const changed = changedPackages.find((p) => packageKey(p) === detectedKey(postApp));
         if ((changed && !targetKeys.has(packageKey(changed))) ||
-            (postApp.packageName === pkg.name && !app && !stoppedBeforeUpgrade)) {
+            (detectedKey(postApp) === packageKey(pkg) && !app && !stoppedBeforeUpgrade)) {
           outstandingRestarts.add(postApp.packageName);
         }
       }
@@ -636,7 +636,7 @@ export async function upgrade(
           const recoveryTarget = app;
           if (await perform(`${pkg.name}: recovery reopen failed`, () => doReopen(recoveryTarget, true))) recoveredReopenCount++;
           else outstandingRestarts.add(pkg.name);
-        } else if (app || postApps.some((a) => a.packageName === pkg.name)) {
+        } else if (app || postApps.some((a) => detectedKey(a) === packageKey(pkg))) {
           outstandingRestarts.add(pkg.name);
         }
         renderExecutionUpgradeFailure(pkg.name, app);
@@ -803,13 +803,13 @@ export async function upgrade(
 }
 
 function renderExecutionContextPreview(
-  packages: Array<{ name: string }>,
+  packages: OutdatedPackage[],
   detectedMap: Map<string, DetectedApp>,
   assessments: Map<string, ExecutionTargetAssessment>,
 ): void {
   const protectedApps = packages.flatMap((pkg) => {
-    const app = detectedMap.get(pkg.name);
-    const assessment = assessments.get(pkg.name);
+    const app = detectedMap.get(packageKey(pkg));
+    const assessment = assessments.get(packageKey(pkg));
     return app && assessment && assessment.membership !== "not-host"
       ? [{ app, assessment }]
       : [];

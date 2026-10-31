@@ -133,10 +133,10 @@ export async function selectPackages(
 ): Promise<OutdatedPackage[]> {
   // Build choice labels with version info and restart status
   const choices = packages.map((pkg) => {
-    const detected = detectedMap.get(pkg.name);
+    const detected = detectedMap.get(packageKey(pkg));
     const version = `${chalk.red(shortVersion(pkg.installedVersions[0] ?? ""))} ${chalk.dim("→")} ${chalk.green(shortVersion(pkg.currentVersion))}`;
     const status = detected
-      ? `  ${formatStatus(detected, executionAssessments?.get(pkg.name))}`
+      ? `  ${formatStatus(detected, executionAssessments?.get(packageKey(pkg)))}`
       : "";
     const label = `${chalk.white(pkg.name)}  ${version}${status}`;
 
