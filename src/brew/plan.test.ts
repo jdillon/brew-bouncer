@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 import { expect, test } from "bun:test";
-import { parseUpgradePreview } from "./plan.ts";
+import { parseUpgradePreview, parseUpgradePreviewRuns } from "./plan.ts";
 import type { OutdatedPackage } from "./parser.ts";
 import { renderPackageTable } from "../output/format.ts";
 import { normalizeTerminalOutput } from "./diagnostics.ts";
@@ -91,6 +91,18 @@ test("incomplete or malformed counted plan sections fail instead of silently omi
     "==> Would upgrade 2 dependents\nnode 1 -> 2\n==> Downloading bottle manifests",
     "==> Would upgrade 1 dependent\nunrecognized plan row with unexpected fields",
   ]) expect(() => parseUpgradePreview(output, selected)).toThrow();
+});
+
+test("each dry run settles a name shared by a formula and a cask", () => {
+  const formula: OutdatedPackage = { name: "linear", type: "formula", installedVersions: ["1"], currentVersion: "2" };
+  const cask: OutdatedPackage = { name: "linear", type: "cask", installedVersions: ["3"], currentVersion: "4" };
+  const rows = (row: string) => `==> Would upgrade 1 requested outdated package\n${row}\n`;
+  const plan = parseUpgradePreviewRuns([
+    { output: rows("linear 1 -> 2"), type: "formula" },
+    { output: rows("linear 3 -> 4"), type: "cask" },
+  ], [formula, cask]);
+  expect(plan.packages).toEqual([formula, cask]);
+  expect(() => parseUpgradePreview(rows("linear 1 -> 2"), [formula, cask])).toThrow("Ambiguous package");
 });
 
 test("a short name cannot silently match two distinct taps", () => {
