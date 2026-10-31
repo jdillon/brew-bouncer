@@ -44,9 +44,9 @@ function fixture() {
       formulae: [], casks: [{ name: "example", installed_versions: ["1"], current_version: "2" }],
     }) })),
     brewInfoJson: mock(async () => ({ ...success, stdout: JSON.stringify({ formulae: [], casks: [] }) })),
-    brewUpgrade: mock(async (_name: string, _options?: { noQuit?: boolean }) => success),
-    brewUpgradePreview: mock(async (names: string[]) => ({ ...success,
-      stdout: `==> Would upgrade ${names.length} requested outdated packages\n${names.map((name) => `${name} 1 -> 2`).join("\n")}\n` })),
+    brewUpgrade: mock(async (_name: string, _options?: { noQuit?: boolean; type?: "formula" | "cask" }) => success),
+    brewUpgradePreview: mock(async (packages: Array<{ name: string }>) => ({ ...success,
+      stdout: `==> Would upgrade ${packages.length} requested outdated packages\n${packages.map(({ name }) => `${name} 1 -> 2`).join("\n")}\n` })),
     detectRunningUpgrades: mock(async (packages: Array<{ name: string }>) =>
       running.filter((app) => packages.some((pkg) => pkg.name === app.packageName))),
     inspectExecutionContext: mock(async () => knownContext),
@@ -69,8 +69,8 @@ test("dependency expansion is shown before the single upgrade approval", async (
   const { dependencies: d } = fixture();
   const output = spyOn(console, "log").mockImplementation(() => {});
   const order: string[] = [];
-  d.brewUpgradePreview.mockImplementation(async (names) => {
-    expect(names).toEqual(["example"]);
+  d.brewUpgradePreview.mockImplementation(async (packages) => {
+    expect(packages.map((pkg) => pkg.name)).toEqual(["example"]);
     order.push("plan");
     return { ...success, stdout: "==> Would upgrade 1 dependency:\npycparser 3.11 -> 3.12" };
   });
@@ -149,7 +149,7 @@ test("selection changes are replanned and approved before any upgrade", async ()
   d.confirmUpgrade.mockResolvedValueOnce("select").mockResolvedValueOnce("yes");
   d.selectPackages.mockImplementation(async (packages) => packages.filter((p) => p.name === "second"));
   expect((await upgrade(interactive, d)).exitCode).toBe(0);
-  expect(d.brewUpgradePreview.mock.calls).toEqual([[["example", "second"]], [["second"]]]);
+  expect(d.brewUpgradePreview.mock.calls.map(([packages]) => packages.map((pkg) => pkg.name))).toEqual([["example", "second"], ["second"]]);
   expect(d.confirmUpgrade).toHaveBeenCalledTimes(2);
   expect(d.brewUpgrade.mock.calls.map(([name]) => name)).toEqual(["second"]);
 });
@@ -162,7 +162,7 @@ test("an app closed at upgrade confirmation stays closed despite the preview res
   expect(d.doQuit).not.toHaveBeenCalled();
   expect(d.doReopen).not.toHaveBeenCalled();
   expect(d.doRestart).not.toHaveBeenCalled();
-  expect(d.brewUpgrade).toHaveBeenCalledWith("example", { noQuit: false });
+  expect(d.brewUpgrade).toHaveBeenCalledWith("example", { noQuit: false, type: "cask" });
 });
 
 test("an app closed during restart policy confirmation stays closed", async () => {
@@ -248,7 +248,7 @@ test("a protected host stays selected and upgrades with --no-quit and no automat
   }] }));
   await upgrade(interactive, d);
   expect(d.confirmRestartPolicy).not.toHaveBeenCalled();
-  expect(d.brewUpgrade).toHaveBeenCalledWith("example", { noQuit: true });
+  expect(d.brewUpgrade).toHaveBeenCalledWith("example", { noQuit: true, type: "cask" });
   expect(d.doQuit).not.toHaveBeenCalled();
   expect(d.doReopen).not.toHaveBeenCalled();
   expect(d.doRestart).not.toHaveBeenCalled();
@@ -287,7 +287,7 @@ test("a different GUI bundle appearing during a prompt is not quit under the old
     return "yes";
   });
   await upgrade(interactive, d);
-  expect(d.brewUpgrade).toHaveBeenCalledWith("example", { noQuit: true });
+  expect(d.brewUpgrade).toHaveBeenCalledWith("example", { noQuit: true, type: "cask" });
   expect(d.doQuit).not.toHaveBeenCalled();
   expect(d.doReopen).not.toHaveBeenCalled();
 });
@@ -463,7 +463,7 @@ test("successful upgrade requests with reopen/quarantine failures produce named 
     isQuarantined: async () => true, doUnquarantine: async () => false,
   }));
   expect(run.result.exitCode).toBe(1);
-  expect(run.output).toContain("1 successful upgrade requests");
+  expect(run.output).toContain("1 successful upgrade request");
   expect(run.output).toContain("example: quarantine removal failed: /fixture/Example.app");
   expect(run.output).toContain("example: reopen failed");
   expect(run.output).toContain("Manual restart/check required: example");
@@ -476,7 +476,7 @@ test("unchanged receipts do not claim an upgrade, while successful request and a
     stdout: "==> Caveats\nThe opencode command is shadowed by:\n  /Users/fixture/.nvm/bin/opencode\n\n" }));
   const run = await captureRun(() => upgrade({ yes: true, verbose: false }, d));
   expect(run.result.exitCode).toBe(0);
-  expect(run.output).toContain("1 successful upgrade requests");
+  expect(run.output).toContain("1 successful upgrade request");
   expect(run.output).toContain("0 observed package version changes");
   expect(run.output).toContain("1 with no version change observed");
   expect(run.output).toContain("/Users/fixture/.nvm/bin/opencode");
@@ -587,7 +587,7 @@ test("newly discovered executable paths are processed under --yes even with an e
   }));
   expect(run.result.exitCode).toBe(0);
   expect(removed).toEqual(["/fixture/newtool"]);
-  expect(run.output).toContain("1 paths checked for quarantine");
+  expect(run.output).toContain("1 path checked for quarantine");
   expect(run.output).toContain("1 unquarantined");
 });
 
@@ -609,8 +609,8 @@ test("stale privacy grants are action items and repeated Homebrew warnings colla
   d.brewOutdated.mockImplementation(async () => ({ ...success, stdout: JSON.stringify({ formulae: [], casks:
     ["example", "second"].map((name) => ({ name, installed_versions: ["1"], current_version: "2" })),
   }) }));
-  d.brewUpgradePreview.mockImplementation(async (names) => ({ ...success, stderr: `${tapWarning}\n`,
-    stdout: `==> Would upgrade ${names.length} requested outdated packages\n${names.map((name) => `${name} 1 -> 2`).join("\n")}\n` }));
+  d.brewUpgradePreview.mockImplementation(async (packages) => ({ ...success, stderr: `${tapWarning}\n`,
+    stdout: `==> Would upgrade ${packages.length} requested outdated packages\n${packages.map(({ name }) => `${name} 1 -> 2`).join("\n")}\n` }));
   d.brewUpgrade.mockImplementation(async (name) => ({ ...success, stderr: `${tapWarning}\n${name === "second"
     ? "==> Caveats\nThe second command is shadowed by:\n  /Users/fixture/bin/second\n" : ""}` }));
   const grant = { service: "kTCCServiceAccessibility", requirement: new Uint8Array([1]) };

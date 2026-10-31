@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 import { expect, test } from "bun:test";
-import { brewUpgradeArgs, execTerminal, formatExecFailure } from "./runner.ts";
+import { brewUpgradeArgs, brewUpgradePreviewArgs, execTerminal, formatExecFailure } from "./runner.ts";
 
 test("formatExecFailure includes stderr", () => {
   expect(formatExecFailure("brew update", {
@@ -38,6 +38,25 @@ test("formatExecFailure always provides an exit-code reason", () => {
     stderr: "",
     exitCode: 3,
   })).toBe("brew update exited with status 3 without an error message.");
+});
+
+test("brewUpgradeArgs names the package type so a shared name stays unambiguous", () => {
+  expect(brewUpgradeArgs("linear", { type: "formula" })).toEqual(["upgrade", "--no-ask", "--formula", "linear"]);
+  expect(brewUpgradeArgs("linear", { type: "cask", noQuit: true })).toEqual([
+    "upgrade", "--no-ask", "--cask", "--no-quit", "linear",
+  ]);
+});
+
+test("brewUpgradePreviewArgs runs one dry run per package type", () => {
+  expect(brewUpgradePreviewArgs([
+    { name: "linear", type: "cask" },
+    { name: "fzf", type: "formula" },
+    { name: "firefox", type: "cask" },
+  ])).toEqual([
+    ["upgrade", "--dry-run", "--formula", "fzf"],
+    ["upgrade", "--dry-run", "--cask", "linear", "firefox"],
+  ]);
+  expect(brewUpgradePreviewArgs([])).toEqual([]);
 });
 
 test("brewUpgradeArgs adds --no-quit only when requested", () => {

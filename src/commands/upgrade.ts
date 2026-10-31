@@ -83,6 +83,8 @@ const defaultUpgradeDependencies = {
 };
 
 /** Upgrade explicit targets using fresh running state and execution-context protection for lifecycle actions. */
+const counted = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
 export async function upgrade(
   options: UpgradeOptions,
   dependencyOverrides: Partial<typeof defaultUpgradeDependencies> = {},
@@ -203,7 +205,7 @@ export async function upgrade(
     const planning = spinner("Resolving Homebrew upgrade plan...");
     let plan: UpgradePreview;
     try {
-      const preview = await brewUpgradePreview(targets.map((pkg) => pkg.name));
+      const preview = await brewUpgradePreview(targets);
       if (preview.exitCode !== 0) {
         planning.fail("Homebrew upgrade planning failed; no upgrades started");
         console.error(formatExecFailure("brew upgrade --dry-run", preview));
@@ -561,7 +563,7 @@ export async function upgrade(
       }
     } else {
       try {
-        const result = await brewUpgrade(pkg.name, { noQuit: suppressHomebrewQuit });
+        const result = await brewUpgrade(pkg.name, { noQuit: suppressHomebrewQuit, type: pkg.type });
         diagnostics.push(...collectUpgradeDiagnostics(pkg.name, result.stdout, result.stderr));
         if (result.diagnosticsIncomplete) diagnostics.push({ packageName: pkg.name, level: "warning", tier: "important",
           message: "Mixed terminal/redirection: some output was displayed directly and could not be summarized; inspect the live output." });
@@ -763,23 +765,24 @@ export async function upgrade(
   }
 
   // Summary
-  const parts: string[] = [];
-  parts.push(`${successfulRequests} successful upgrade requests`);
-  parts.push(`${observedChanges.size} observed package version changes`);
-  if (dependencyUpdated.size) parts.push(`${dependencyUpdated.size} targets updated by earlier operations`);
-  if (noVersionChangeCount) parts.push(`${noVersionChangeCount} with no version change observed`);
-  if (skippedWork.length) parts.push(`${skippedWork.length} skipped`);
-  if (quarantineCheckedCount) parts.push(`${quarantineCheckedCount} paths checked for quarantine`);
-  if (lifecycleFailures.length) parts.push(`${lifecycleFailures.length} lifecycle failures`);
-  if (failCount > 0) parts.push(chalk.yellow(`${failCount} failed`));
-  if (unquarantinedCount > 0) parts.push(chalk.green(`${unquarantinedCount} unquarantined`));
-  if (restartedCount > 0) parts.push(chalk.cyan(`${restartedCount} restarted`));
-  if (restartSkippedCount > 0) parts.push(chalk.dim(`${restartSkippedCount} restart skipped`));
-  if (recoveredReopenCount > 0) parts.push(`${recoveredReopenCount} reopened after failed upgrades`);
+  const results: string[] = [];
+  results.push(`✅ ${counted(successfulRequests, "successful upgrade request")}`);
+  results.push(`📦 ${counted(observedChanges.size, "observed package version change")}`);
+  if (dependencyUpdated.size) results.push(`🔗 ${counted(dependencyUpdated.size, "target")} updated by earlier operations`);
+  if (noVersionChangeCount) results.push(`➖ ${noVersionChangeCount} with no version change observed`);
+  if (quarantineCheckedCount) results.push(`🔍 ${counted(quarantineCheckedCount, "path")} checked for quarantine`);
+  if (unquarantinedCount > 0) results.push(chalk.green(`🧼 ${unquarantinedCount} unquarantined`));
+  if (restartedCount > 0) results.push(chalk.cyan(`🔄 ${restartedCount} restarted`));
+  if (recoveredReopenCount > 0) results.push(`🚪 ${recoveredReopenCount} reopened after failed upgrades`);
+  if (skippedWork.length) results.push(`⏩ ${skippedWork.length} skipped`);
+  if (restartSkippedCount > 0) results.push(chalk.dim(`🚧 ${restartSkippedCount} restart skipped`));
   if (outstandingRestarts.size > 0) {
-    parts.push(chalk.dim(`${outstandingRestarts.size} manual restart/check required`));
+    results.push(chalk.dim(`👉 ${outstandingRestarts.size} manual restart/check required`));
   }
-  console.log(parts.join(chalk.dim(" · ")));
+  if (failCount > 0) results.push(chalk.yellow(`❌ ${failCount} failed`));
+  if (lifecycleFailures.length) results.push(`💥 ${counted(lifecycleFailures.length, "lifecycle failure")}`);
+  console.log(chalk.bold("Upgrade results"));
+  for (const result of results) console.log(`  ${result}`);
 
   for (const failure of failedRequests) console.log(chalk.red(`  Failed upgrade: ${failure}`));
   for (const failure of lifecycleFailures) console.log(chalk.red(`  Recovery failure: ${failure}`));
