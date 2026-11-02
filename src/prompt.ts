@@ -138,7 +138,8 @@ export async function selectPackages(
     const status = detected
       ? `  ${formatStatus(detected, executionAssessments?.get(packageKey(pkg)))}`
       : "";
-    const label = `${chalk.white(pkg.name)}  ${version}${status}`;
+    const typeIcon = pkg.type === "cask" ? "🍷" : "🍺";
+    const label = `${typeIcon} ${chalk.white(pkg.name)}  ${version}${status}`;
 
     return {
       name: label,

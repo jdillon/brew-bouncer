@@ -242,8 +242,9 @@ export async function brewUpgrade(
   return execStreaming(brewUpgradeArgs(name, options));
 }
 
+/** Cask metadata only; a bare name shared with a formula would resolve to just one of them. */
 export async function brewInfoJson(names: string[]): Promise<ExecResult> {
-  return exec(["info", "--json=v2", ...names]);
+  return exec(["info", "--json=v2", "--cask", ...names]);
 }
 
 export async function brewList(formula: string): Promise<ExecResult> {
