@@ -61,9 +61,9 @@ import {
   permissionSettingsUrl,
   type PermissionInspection,
 } from "../permissions.ts";
-import { installedChanges, packageKey, parseInstalled, type InstalledState } from "../brew/state.ts";
+import { detectedKey, installedChanges, packageKey, parseInstalled, type InstalledState } from "../brew/state.ts";
 import type { OutdatedPackage } from "../brew/parser.ts";
-import { parseUpgradePreview, type UpgradePreview } from "../brew/plan.ts";
+import { parseUpgradePreviewRuns, type UpgradePreview } from "../brew/plan.ts";
 
 interface UpgradeOptions {
   yes: boolean;
@@ -83,6 +83,8 @@ const defaultUpgradeDependencies = {
 };
 
 /** Upgrade explicit targets using fresh running state and execution-context protection for lifecycle actions. */
+const counted = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
 export async function upgrade(
   options: UpgradeOptions,
   dependencyOverrides: Partial<typeof defaultUpgradeDependencies> = {},
@@ -203,14 +205,21 @@ export async function upgrade(
     const planning = spinner("Resolving Homebrew upgrade plan...");
     let plan: UpgradePreview;
     try {
-      const preview = await brewUpgradePreview(targets.map((pkg) => pkg.name));
-      if (preview.exitCode !== 0) {
-        planning.fail("Homebrew upgrade planning failed; no upgrades started");
-        console.error(formatExecFailure("brew upgrade --dry-run", preview));
-        return { exitCode: 1 };
+      const runs: Array<{ output: string; type: OutdatedPackage["type"] }> = [];
+      planningDiagnostics = [];
+      for (const type of ["formula", "cask"] as const) {
+        const names = targets.filter((pkg) => pkg.type === type).map((pkg) => pkg.name);
+        if (names.length === 0) continue;
+        const preview = await brewUpgradePreview(names, type);
+        if (preview.exitCode !== 0) {
+          planning.fail("Homebrew upgrade planning failed; no upgrades started");
+          console.error(formatExecFailure("brew upgrade --dry-run", preview));
+          return { exitCode: 1 };
+        }
+        runs.push({ output: `${preview.stdout}\n${preview.stderr}`, type });
+        planningDiagnostics.push(...collectUpgradeDiagnostics("Homebrew plan", preview.stdout, preview.stderr));
       }
-      plan = parseUpgradePreview(`${preview.stdout}\n${preview.stderr}`, targets, allOutdated);
-      planningDiagnostics = collectUpgradeDiagnostics("Homebrew plan", preview.stdout, preview.stderr);
+      plan = parseUpgradePreviewRuns(runs, targets, allOutdated);
     } catch (error) {
       planning.fail("Homebrew upgrade planning failed; no upgrades started");
       console.error(error instanceof Error ? error.message : String(error));
@@ -223,12 +232,12 @@ export async function upgrade(
     // Step 5: Detect running processes BEFORE showing preview
     const s3 = spinner("Checking running processes...");
     const preDetected = await detectRunningUpgrades(plan.packages, (msg) => s3.update(msg));
-    detectedMap = new Map(preDetected.map((d) => [d.packageName, d]));
+    detectedMap = new Map(preDetected.map((d) => [detectedKey(d), d]));
     s3.update("checking Brew Bouncer execution context");
     previewExecutionContext = await inspectExecutionContext();
     previewExecutionAssessments = new Map(
       preDetected.map((app) => [
-        app.packageName,
+        detectedKey(app),
         assessExecutionTarget(app, previewExecutionContext),
       ]),
     );
@@ -314,13 +323,13 @@ export async function upgrade(
   // Step 7: Ask restart policy from the selected preview. Running state is
   // checked afresh when each package reaches the upgrade step below.
   const affectedCount = targets.filter((pkg) => {
-    const app = detectedMap.get(pkg.name);
+    const app = detectedMap.get(packageKey(pkg));
     if (!app || isManualRestartOnly(app)) return false;
     return planExecutionSafety(
       pkg,
       app,
       previewExecutionContext,
-      previewExecutionAssessments.get(pkg.name),
+      previewExecutionAssessments.get(packageKey(pkg)),
     ).allowAutomaticLifecycle;
   }).length;
   let restartPolicy: RestartPolicy = "no";
@@ -440,7 +449,7 @@ export async function upgrade(
     let app = (await runningFor([pkg]))[0];
     // Old kegs may have been cleaned up. Retain preview evidence for manual
     // guidance only; it never authorizes a lifecycle action on a stale PID.
-    const earlierApp = alreadyUpdated ? detectedMap.get(pkg.name) : undefined;
+    const earlierApp = alreadyUpdated ? detectedMap.get(packageKey(pkg)) : undefined;
     const decisionContext = await contextFor(pkg, app);
     const decisionAssessment = app
       ? assessExecutionTarget(app, decisionContext)
@@ -561,7 +570,7 @@ export async function upgrade(
       }
     } else {
       try {
-        const result = await brewUpgrade(pkg.name, { noQuit: suppressHomebrewQuit });
+        const result = await brewUpgrade(pkg.name, { noQuit: suppressHomebrewQuit, type: pkg.type });
         diagnostics.push(...collectUpgradeDiagnostics(pkg.name, result.stdout, result.stderr));
         if (result.diagnosticsIncomplete) diagnostics.push({ packageName: pkg.name, level: "warning", tier: "important",
           message: "Mixed terminal/redirection: some output was displayed directly and could not be summarized; inspect the live output." });
@@ -611,14 +620,14 @@ export async function upgrade(
         pkg, ...changedPackages.filter((changed) => packageKey(changed) !== packageKey(pkg)),
       ]);
       for (const changed of changedPackages) {
-        if (!targetKeys.has(packageKey(changed)) && detectedMap.has(changed.name)) {
+        if (!targetKeys.has(packageKey(changed)) && detectedMap.has(packageKey(changed))) {
           outstandingRestarts.add(changed.name);
         }
       }
       for (const postApp of postApps) {
-        const changed = changedPackages.find((p) => p.name === postApp.packageName);
+        const changed = changedPackages.find((p) => packageKey(p) === detectedKey(postApp));
         if ((changed && !targetKeys.has(packageKey(changed))) ||
-            (postApp.packageName === pkg.name && !app && !stoppedBeforeUpgrade)) {
+            (detectedKey(postApp) === packageKey(pkg) && !app && !stoppedBeforeUpgrade)) {
           outstandingRestarts.add(postApp.packageName);
         }
       }
@@ -627,7 +636,7 @@ export async function upgrade(
           const recoveryTarget = app;
           if (await perform(`${pkg.name}: recovery reopen failed`, () => doReopen(recoveryTarget, true))) recoveredReopenCount++;
           else outstandingRestarts.add(pkg.name);
-        } else if (app || postApps.some((a) => a.packageName === pkg.name)) {
+        } else if (app || postApps.some((a) => detectedKey(a) === packageKey(pkg))) {
           outstandingRestarts.add(pkg.name);
         }
         renderExecutionUpgradeFailure(pkg.name, app);
@@ -763,23 +772,24 @@ export async function upgrade(
   }
 
   // Summary
-  const parts: string[] = [];
-  parts.push(`${successfulRequests} successful upgrade requests`);
-  parts.push(`${observedChanges.size} observed package version changes`);
-  if (dependencyUpdated.size) parts.push(`${dependencyUpdated.size} targets updated by earlier operations`);
-  if (noVersionChangeCount) parts.push(`${noVersionChangeCount} with no version change observed`);
-  if (skippedWork.length) parts.push(`${skippedWork.length} skipped`);
-  if (quarantineCheckedCount) parts.push(`${quarantineCheckedCount} paths checked for quarantine`);
-  if (lifecycleFailures.length) parts.push(`${lifecycleFailures.length} lifecycle failures`);
-  if (failCount > 0) parts.push(chalk.yellow(`${failCount} failed`));
-  if (unquarantinedCount > 0) parts.push(chalk.green(`${unquarantinedCount} unquarantined`));
-  if (restartedCount > 0) parts.push(chalk.cyan(`${restartedCount} restarted`));
-  if (restartSkippedCount > 0) parts.push(chalk.dim(`${restartSkippedCount} restart skipped`));
-  if (recoveredReopenCount > 0) parts.push(`${recoveredReopenCount} reopened after failed upgrades`);
+  const results: string[] = [];
+  results.push(`✅ ${counted(successfulRequests, "successful upgrade request")}`);
+  results.push(`📦 ${counted(observedChanges.size, "observed package version change")}`);
+  if (dependencyUpdated.size) results.push(`🔗 ${counted(dependencyUpdated.size, "target")} updated by earlier operations`);
+  if (noVersionChangeCount) results.push(`➖ ${noVersionChangeCount} with no version change observed`);
+  if (quarantineCheckedCount) results.push(`🔍 ${counted(quarantineCheckedCount, "path")} checked for quarantine`);
+  if (unquarantinedCount > 0) results.push(chalk.green(`🧼 ${unquarantinedCount} unquarantined`));
+  if (restartedCount > 0) results.push(chalk.cyan(`🔄 ${restartedCount} restarted`));
+  if (recoveredReopenCount > 0) results.push(`🚪 ${recoveredReopenCount} reopened after failed upgrades`);
+  if (skippedWork.length) results.push(`⏩ ${skippedWork.length} skipped`);
+  if (restartSkippedCount > 0) results.push(chalk.dim(`🚧 ${restartSkippedCount} restart skipped`));
   if (outstandingRestarts.size > 0) {
-    parts.push(chalk.dim(`${outstandingRestarts.size} manual restart/check required`));
+    results.push(chalk.dim(`👉 ${outstandingRestarts.size} manual restart/check required`));
   }
-  console.log(parts.join(chalk.dim(" · ")));
+  if (failCount > 0) results.push(chalk.yellow(`❌ ${failCount} failed`));
+  if (lifecycleFailures.length) results.push(`💥 ${counted(lifecycleFailures.length, "lifecycle failure")}`);
+  console.log(chalk.bold("Upgrade results"));
+  for (const result of results) console.log(`  ${result}`);
 
   for (const failure of failedRequests) console.log(chalk.red(`  Failed upgrade: ${failure}`));
   for (const failure of lifecycleFailures) console.log(chalk.red(`  Recovery failure: ${failure}`));
@@ -793,13 +803,13 @@ export async function upgrade(
 }
 
 function renderExecutionContextPreview(
-  packages: Array<{ name: string }>,
+  packages: OutdatedPackage[],
   detectedMap: Map<string, DetectedApp>,
   assessments: Map<string, ExecutionTargetAssessment>,
 ): void {
   const protectedApps = packages.flatMap((pkg) => {
-    const app = detectedMap.get(pkg.name);
-    const assessment = assessments.get(pkg.name);
+    const app = detectedMap.get(packageKey(pkg));
+    const assessment = assessments.get(packageKey(pkg));
     return app && assessment && assessment.membership !== "not-host"
       ? [{ app, assessment }]
       : [];

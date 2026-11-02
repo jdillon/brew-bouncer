@@ -15,6 +15,7 @@
  */
 import { getLogger } from "@logtape/logtape";
 import { BREW_PATH } from "./paths.ts";
+import type { OutdatedPackage } from "./parser.ts";
 
 const log = getLogger(["brew-bouncer", "brew"]);
 
@@ -202,9 +203,12 @@ export async function brewOutdated(): Promise<ExecResult> {
 }
 
 /** Resolve Homebrew's dependency/dependent expansion before Bouncer's approval. */
-export async function brewUpgradePreview(names: string[]): Promise<ExecResult> {
+export async function brewUpgradePreview(
+  names: string[],
+  type: OutdatedPackage["type"],
+): Promise<ExecResult> {
   if (names.length === 0) throw new Error("Cannot preview an upgrade without explicit package names");
-  return exec(["upgrade", "--dry-run", ...names]);
+  return exec(["upgrade", "--dry-run", `--${type}`, ...names]);
 }
 
 /**
@@ -214,6 +218,7 @@ export async function brewUpgradePreview(names: string[]): Promise<ExecResult> {
  */
 export interface BrewUpgradeOptions {
   noQuit?: boolean;
+  type?: OutdatedPackage["type"];
 }
 
 export function brewUpgradeArgs(
@@ -222,7 +227,12 @@ export function brewUpgradeArgs(
 ): string[] {
   // This runner is used only after Bouncer's own upgrade approval. Keep other
   // Homebrew/installer prompts interactive; suppress only duplicate approval.
-  return ["upgrade", "--no-ask", ...(options.noQuit ? ["--no-quit"] : []), name];
+  return [
+    "upgrade", "--no-ask",
+    ...(options.type ? [`--${options.type}`] : []),
+    ...(options.noQuit ? ["--no-quit"] : []),
+    name,
+  ];
 }
 
 export async function brewUpgrade(
@@ -232,8 +242,9 @@ export async function brewUpgrade(
   return execStreaming(brewUpgradeArgs(name, options));
 }
 
+/** Cask metadata only; a bare name shared with a formula would resolve to just one of them. */
 export async function brewInfoJson(names: string[]): Promise<ExecResult> {
-  return exec(["info", "--json=v2", ...names]);
+  return exec(["info", "--json=v2", "--cask", ...names]);
 }
 
 export async function brewList(formula: string): Promise<ExecResult> {

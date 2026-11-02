@@ -14,9 +14,13 @@
  * limitations under the License.
  */
 import type { OutdatedPackage } from "./parser.ts";
+import type { DetectedApp } from "../detect/matcher.ts";
 
 export type InstalledState = Map<string, OutdatedPackage>;
 export const packageKey = (pkg: Pick<OutdatedPackage, "type" | "name">): string => `${pkg.type}:${pkg.name}`;
+/** The packageKey of the package an app was detected for. */
+export const detectedKey = (app: DetectedApp): string =>
+  packageKey({ name: app.packageName, type: app.kind.startsWith("cask") ? "cask" : "formula" });
 
 /** Installed receipts are observations, never proof of file integrity/rollback. */
 export function parseInstalled(json: string): InstalledState {

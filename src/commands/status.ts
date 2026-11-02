@@ -26,6 +26,7 @@ import {
   detectInstallerManualCasks,
 } from "../brew/parser.ts";
 import { detectRunningUpgrades } from "../detect/matcher.ts";
+import { detectedKey } from "../brew/state.ts";
 import { loadConfig } from "../config.ts";
 import { spinner } from "../spinner.ts";
 import { renderPackageTable, renderSkipped, renderSummary } from "../output/format.ts";
@@ -87,7 +88,7 @@ export async function status(): Promise<void> {
   const detected = await detectRunningUpgrades(actionable, (msg) => s3.update(msg));
   s3.done(`Checked ${actionable.length} packages against running processes`);
 
-  const detectedMap = new Map(detected.map((d) => [d.packageName, d]));
+  const detectedMap = new Map(detected.map((d) => [detectedKey(d), d]));
 
   console.log("");
 

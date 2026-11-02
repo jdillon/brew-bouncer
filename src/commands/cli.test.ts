@@ -78,7 +78,7 @@ mock.module(${JSON.stringify(join(src, "quarantine.ts"))}, () => ({ enumeratePac
       const [stdout, stderr, exit] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
       expect({ exit, stderr }).toMatchObject({ exit: mode === "success" ? 0 : 1 });
       expect(JSON.parse((await readFile(join(root, "plans"), "utf8")).trim())).toEqual([
-        "upgrade", "--dry-run", "fixture-first", "fixture-second",
+        "upgrade", "--dry-run", "--formula", "fixture-first", "fixture-second",
       ]);
       expect(stderr).not.toContain("Do you want to proceed with the upgrade?");
       if (mode === "planning-failure") {
@@ -91,7 +91,7 @@ mock.module(${JSON.stringify(join(src, "quarantine.ts"))}, () => ({ enumeratePac
       expect(stdout).not.toContain("==> Would upgrade");
       expect(stdout).not.toContain("Homebrew upgrade plan (including");
       expect(await readFile(join(root, "requests"), "utf8")).toBe("fixture-first\nfixture-second\n");
-      expect(stdout).toContain(mode === "partial" ? "1 successful upgrade requests" : "2 successful upgrade requests");
+      expect(stdout).toContain(mode === "partial" ? "1 successful upgrade request" : "2 successful upgrade requests");
       if (mode === "partial") {
         expect(stdout).toContain("Failed upgrade: fixture-first:");
         expect(stdout).toContain("Attempting rollback");

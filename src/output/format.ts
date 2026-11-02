@@ -15,6 +15,7 @@
  */
 import type { OutdatedPackage } from "../brew/parser.ts";
 import type { DetectedApp } from "../detect/matcher.ts";
+import { packageKey } from "../brew/state.ts";
 import type { ExecutionTargetAssessment } from "../detect/execution-context.ts";
 import chalk from "chalk";
 import Table from "cli-table3";
@@ -73,9 +74,9 @@ export function renderPackageTable(
   });
 
   for (const pkg of packages) {
-    const detected = detectedMap?.get(pkg.name);
+    const detected = detectedMap?.get(packageKey(pkg));
     const runningStatus = detected
-      ? formatStatus(detected, executionAssessments?.get(pkg.name))
+      ? formatStatus(detected, executionAssessments?.get(packageKey(pkg)))
       : "";
     const statusCell = [runningStatus, planReasons?.has(pkg.name) ? chalk.dim(planReasons.get(pkg.name)!) : ""]
       .filter(Boolean).join(" · ");

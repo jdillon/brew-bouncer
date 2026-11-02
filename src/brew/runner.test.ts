@@ -40,6 +40,13 @@ test("formatExecFailure always provides an exit-code reason", () => {
   })).toBe("brew update exited with status 3 without an error message.");
 });
 
+test("brewUpgradeArgs names the package type so a shared name stays unambiguous", () => {
+  expect(brewUpgradeArgs("linear", { type: "formula" })).toEqual(["upgrade", "--no-ask", "--formula", "linear"]);
+  expect(brewUpgradeArgs("linear", { type: "cask", noQuit: true })).toEqual([
+    "upgrade", "--no-ask", "--cask", "--no-quit", "linear",
+  ]);
+});
+
 test("brewUpgradeArgs adds --no-quit only when requested", () => {
   expect(brewUpgradeArgs("cmux")).toEqual(["upgrade", "--no-ask", "cmux"]);
   expect(brewUpgradeArgs("cmux", { noQuit: true })).toEqual([
