@@ -103,6 +103,9 @@ test("each dry run settles a name shared by a formula and a cask", () => {
   ], [formula, cask]);
   expect(plan.packages).toEqual([formula, cask]);
   expect(() => parseUpgradePreview(rows("linear 1 -> 2"), [formula, cask])).toThrow("Ambiguous package");
+  expect(() => parseUpgradePreviewRuns([
+    { output: "==> Would upgrade 1 dependency:\nlinear 1 -> 2\n", type: "cask" },
+  ], [cask], [formula, cask])).toThrow("Ambiguous package");
 });
 
 test("a short name cannot silently match two distinct taps", () => {
