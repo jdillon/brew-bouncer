@@ -139,19 +139,51 @@ for (const failure of ["exit", "throw"]) {
   });
 }
 
-test("selection changes are replanned and approved before any upgrade", async () => {
+test("a narrowed selection is replanned and proceeds without a second approval", async () => {
   const { dependencies: d } = fixture();
   d.brewOutdated.mockImplementation(async () => ({ ...success, stdout: JSON.stringify({
     formulae: [], casks: ["example", "second"].map((name) => ({
       name, installed_versions: ["1"], current_version: "2",
     })),
   }) }));
-  d.confirmUpgrade.mockResolvedValueOnce("select").mockResolvedValueOnce("yes");
+  d.confirmUpgrade.mockResolvedValueOnce("select");
   d.selectPackages.mockImplementation(async (packages) => packages.filter((p) => p.name === "second"));
-  expect((await upgrade(interactive, d)).exitCode).toBe(0);
+  const { output } = await captureRun(() => upgrade(interactive, d));
   expect(d.brewUpgradePreview.mock.calls).toEqual([[["example", "second"], "cask"], [["second"], "cask"]]);
-  expect(d.confirmUpgrade).toHaveBeenCalledTimes(2);
+  expect(d.confirmUpgrade).toHaveBeenCalledTimes(1);
+  expect(output.match(/The following packages will be/g)).toHaveLength(1);
+  expect(output).toContain("Selection changed (1 of 2 selected); recomputing");
+  expect(output).toContain("nothing new to approve");
   expect(d.brewUpgrade.mock.calls.map(([name]) => name)).toEqual(["second"]);
+});
+
+test("an unchanged selection proceeds with the reviewed plan without recomputing", async () => {
+  const { dependencies: d } = fixture();
+  d.confirmUpgrade.mockResolvedValueOnce("select");
+  const { output } = await captureRun(() => upgrade(interactive, d));
+  expect(d.brewUpgradePreview).toHaveBeenCalledTimes(1);
+  expect(d.confirmUpgrade).toHaveBeenCalledTimes(1);
+  expect(output).toContain("Selection unchanged");
+  expect(d.brewUpgrade.mock.calls.map(([name]) => name)).toEqual(["example"]);
+});
+
+test("a deselected package returning as a dependency needs a new approval", async () => {
+  const { dependencies: d } = fixture();
+  d.brewOutdated.mockImplementation(async () => ({ ...success, stdout: JSON.stringify({
+    formulae: [], casks: ["example", "second"].map((name) => ({
+      name, installed_versions: ["1"], current_version: "2",
+    })),
+  }) }));
+  d.brewUpgradePreview.mockImplementation(async (names) => ({ ...success, stdout:
+    `==> Would upgrade ${names.length} requested outdated packages\n${names.map((name) => `${name} 1 -> 2`).join("\n")}\n` +
+    (names.length === 1 ? "==> Would upgrade 1 dependency:\nexample 1 -> 2\n" : "") }));
+  d.confirmUpgrade.mockResolvedValueOnce("select").mockResolvedValueOnce("no");
+  d.selectPackages.mockImplementation(async (packages) => packages.filter((p) => p.name === "second"));
+  const { output } = await captureRun(() => upgrade(interactive, d));
+  expect(d.confirmUpgrade).toHaveBeenCalledTimes(2);
+  expect(output.match(/The following packages will be/g)).toHaveLength(2);
+  expect(output).toContain("adds 1 package you have not approved: example (dependency)");
+  expect(d.brewUpgrade).not.toHaveBeenCalled();
 });
 
 test("a formula and cask sharing a name are planned and upgraded separately", async () => {

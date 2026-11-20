@@ -58,10 +58,15 @@ export async function isQuarantined(path: string): Promise<boolean | null> {
   throw new Error(`Cannot inspect quarantine for ${path}: ${stderr.trim() || `xattr exited ${exitCode}`}`);
 }
 
+// Single quotes stop $(...) and backticks from running when the command is pasted.
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 /**
  * Remove quarantine recursively from a path (file or app bundle).
  */
-export async function removeQuarantine(path: string): Promise<boolean> {
+export async function removeQuarantine(path: string, onError?: (reason: string) => void): Promise<boolean> {
   const proc = Bun.spawn(
     ["xattr", "-r", "-d", "com.apple.quarantine", path],
     {
@@ -75,6 +80,7 @@ export async function removeQuarantine(path: string): Promise<boolean> {
 
   if (exitCode !== 0) {
     log.warn("failed to remove quarantine: {path} {stderr}", { path, stderr: stderr.trim() });
+    onError?.(stderr.trim().split("\n")[0] || `xattr exited ${exitCode}`);
     return false;
   }
 

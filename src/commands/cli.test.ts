@@ -69,7 +69,7 @@ if (args[0] === "outdated") {
 mock.module(${JSON.stringify(join(src, "config.ts"))}, () => ({ loadConfig: async () => ({ ignore: [], promptDefaults: { upgrade: "yes", restartPolicy: "yes", quarantinePolicy: "yes" } }) }));
 mock.module(${JSON.stringify(join(src, "detect/matcher.ts"))}, () => ({ detectRunningUpgrades: async () => [] }));
 mock.module(${JSON.stringify(join(src, "detect/execution-context.ts"))}, () => ({ inspectExecutionContext: async () => ({ status: "known", rootPid: 999, frames: [], guiHosts: [], hints: { tmux: false }, issues: [] }), assessExecutionTarget: () => ({ membership: "not-host" }) }));
-mock.module(${JSON.stringify(join(src, "quarantine.ts"))}, () => ({ enumeratePackageExecutables: async (packages) => process.env.BOUNCER_FIXTURE_MODE === "lifecycle" ? new Map(packages.map((p) => [p.name, ["/fixture/" + p.name]])) : new Map(), isQuarantined: async () => true, removeQuarantine: async () => false }));
+mock.module(${JSON.stringify(join(src, "quarantine.ts"))}, () => ({ enumeratePackageExecutables: async (packages) => process.env.BOUNCER_FIXTURE_MODE === "lifecycle" ? new Map(packages.map((p) => [p.name, ["/fixture/" + p.name]])) : new Map(), isQuarantined: async () => true, removeQuarantine: async () => false, shellQuote: (value) => value }));
 `);
       const proc = Bun.spawn([process.execPath, "--preload", join(root, "preload.ts"), join(src, "index.ts"), "upgrade", "--yes", "fixture-first", "fixture-second"], {
         env: { ...process.env, HOMEBREW_PREFIX: root, BOUNCER_FIXTURE_ROOT: root, BOUNCER_FIXTURE_MODE: mode },

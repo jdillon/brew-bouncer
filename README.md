@@ -71,9 +71,11 @@ If omitted, the built-in defaults remain `yes` for upgrade confirmation and
 and quarantine-removal prompt.
 
 The upgrade preview includes Homebrew's planned dependency installs and
-dependent upgrades in the same table. Changing the package selection refreshes
-the preview for approval. Execution uses `--no-ask` to avoid repeated
-Homebrew upgrade confirmations; installer and privilege prompts remain interactive.
+dependent upgrades in the same table. Changing the package selection replans
+the upgrade and asks again only if the new plan adds a package, such as a
+deselected one that returns as a dependency. Execution uses `--no-ask` to avoid
+repeated Homebrew upgrade confirmations; installer and privilege prompts remain
+interactive.
 
 ## Building from source
 

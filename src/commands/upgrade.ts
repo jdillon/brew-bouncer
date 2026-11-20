@@ -44,7 +44,7 @@ import {
   type GuiQuitStatus,
 } from "../restart.ts";
 import { confirmUpgrade, selectPackages, confirmRestartPolicy, confirmRestart, confirmQuarantinePolicy, confirmUnquarantine, type PolicyChoice, type RestartPolicy } from "../prompt.ts";
-import { enumeratePackageExecutables, isQuarantined, removeQuarantine } from "../quarantine.ts";
+import { enumeratePackageExecutables, isQuarantined, removeQuarantine, shellQuote } from "../quarantine.ts";
 import { loadConfig } from "../config.ts";
 import { log } from "../logger.ts";
 import { spinner } from "../spinner.ts";
@@ -52,6 +52,8 @@ import { renderPackageTable, renderSkipped, renderSummary } from "../output/form
 import { getVersion } from "../version.ts";
 import { planExecutionSafety } from "../upgrade-policy.ts";
 import chalk from "chalk";
+import { statSync } from "node:fs";
+import { userInfo } from "node:os";
 import { collectUpgradeDiagnostics, groupDiagnostics, type DiagnosticTier, type UpgradeDiagnostic } from "../brew/diagnostics.ts";
 import {
   appDisplayName,
@@ -200,7 +202,9 @@ export async function upgrade(
   let planningDiagnostics: UpgradeDiagnostic[] = [];
 
   // Resolve changes before rendering the one preview. Selection regenerates
-  // both the plan and affected-process observations before approval.
+  // both the plan and affected-process observations, and asks again only when
+  // the new plan holds something the user has not approved.
+  let approved: Set<string> | null = null;
   while (true) {
     const planning = spinner("Resolving Homebrew upgrade plan...");
     let plan: UpgradePreview;
@@ -285,6 +289,17 @@ export async function upgrade(
 
     // Step 6: Show preview and confirm
     const installs = plan.packages.filter((pkg) => pkg.installedVersions.length === 0).length;
+    if (approved) {
+      const known = approved;
+      const added = plan.packages.filter((pkg) => !known.has(packageKey(pkg)));
+      if (added.length === 0) {
+        console.log("\nPlan recomputed for your selection; nothing new to approve.");
+        renderSummary(plan.packages.length - installs, detectedMap.size, skipped.length, installs);
+        break;
+      }
+      const names = added.map((pkg) => plan.reasons.has(pkg.name) ? `${pkg.name} (${plan.reasons.get(pkg.name)})` : pkg.name);
+      console.log(chalk.yellow(`\nThe recomputed plan adds ${counted(added.length, "package")} you have not approved: ${names.join(", ")}`));
+    }
     console.log(chalk.bold(`\nThe following packages will be ${installs ? "changed" : "upgraded"} (${plan.packages.length}):\n`));
     console.log(renderPackageTable(plan.packages, detectedMap, previewExecutionAssessments, plan.reasons));
     renderExecutionContextPreview(plan.packages, detectedMap, previewExecutionAssessments);
@@ -305,6 +320,7 @@ export async function upgrade(
       return { exitCode: 0 };
     }
     if (choice === "select") {
+      const dropped = new Set(targets.map(packageKey));
       targets = await selectPackages(
         targets,
         detectedMap,
@@ -315,6 +331,14 @@ export async function upgrade(
         return { exitCode: 0 };
       }
 
+      for (const pkg of targets) dropped.delete(packageKey(pkg));
+      if (dropped.size === 0) {
+        console.log("Selection unchanged; continuing with the reviewed plan.");
+        break;
+      }
+      // A deselected package can come back as a dependency, so it stays out.
+      approved = new Set(plan.packages.map(packageKey).filter((key) => !dropped.has(key)));
+      console.log(chalk.cyan(`\nSelection changed (${targets.length} of ${targets.length + dropped.size} selected); recomputing the upgrade plan, running apps and permissions...`));
       continue;
     }
     break;
@@ -927,8 +951,17 @@ async function doReopen(
 
 async function doUnquarantine(path: string): Promise<boolean> {
   process.stdout.write(`  ${chalk.green("🔓")} Removing quarantine from ${chalk.bold(path)}... `);
-  const ok = await removeQuarantine(path);
+  let reason = "";
+  const ok = await removeQuarantine(path, (r) => { reason = r; });
   console.log(ok ? chalk.green("done") : chalk.red("failed"));
+  if (!ok) {
+    console.log(chalk.dim(`    ${reason}`));
+    // A root-owned bundle (left over from an earlier install) blocks xattr changes.
+    const owner = statSync(path, { throwIfNoEntry: false })?.uid;
+    if (owner !== undefined && owner !== process.getuid!()) {
+      console.log(chalk.dim(`    ${path} is owned by uid ${owner}; try: sudo chown -RH ${shellQuote(userInfo().username)} ${shellQuote(path)}`));
+    }
+  }
   return ok;
 }
 
